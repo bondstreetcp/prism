@@ -1,10 +1,10 @@
-"""Streamlit web app: upload a broker position CSV, get the risk tearsheet.
+"""Streamlit web app for the portfolio risk tool.
 
-Run locally:
-    streamlit run app.py
+Views: on-screen Report (with a cash / delta-adjusted / beta-adjusted toggle),
+Trends over time, Benchmark-relative (active) risk, and an Optimizer.
 
-Private deploy (Render / Railway / Fly / VPS): set an APP_PASSWORD secret to
-gate access. See DEPLOY.md.
+Run locally:  streamlit run app.py
+Private deploy: set APP_PASSWORD.  See DEPLOY.md.
 """
 
 from __future__ import annotations
@@ -15,38 +15,48 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-import pdfplumber
+import pandas as pd
 import streamlit as st
 
+from riskreport.analytics import (
+    BASIS_COLUMNS, CAP_ORDER, basis_category_table, basis_summary,
+    basis_top_issuers,
+)
+from riskreport.benchmark import BENCHMARK_CHOICES, active_risk
+from riskreport.optimizer import OBJECTIVES, optimize_overlay
 from riskreport.pipeline import generate_report
+from riskreport.trends import TREND_METRICS, load_trend_series
 
-st.set_page_config(page_title="Portfolio Risk Report", page_icon="📊",
-                   layout="wide")
+st.set_page_config(page_title="Portfolio Risk", page_icon="📊", layout="wide")
 
 CACHE_DIR = os.environ.get("RISK_CACHE_DIR", "cache")
 OUT_DIR = os.environ.get("RISK_OUT_DIR", "reports")
+SNAP_DIR = os.environ.get("RISK_SNAP_DIR", "snapshots")
 
 
-# ----------------------------------------------------------------------
-# Password gate (only enforced when APP_PASSWORD is set — local dev is open)
-# ----------------------------------------------------------------------
-def _expected_password() -> str | None:
+def _m(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    v = v / 1e6
+    return f"(${abs(v):,.1f}M)" if v < 0 else f"${v:,.1f}M"
+
+
+# ----------------------------------------------------------------- auth
+def _expected_password():
     env = os.environ.get("APP_PASSWORD")
     if env:
         return env
-    try:  # st.secrets raises if no secrets file is configured
+    try:
         return st.secrets.get("APP_PASSWORD")
     except Exception:
         return None
 
 
-def _check_password() -> bool:
+def _gate() -> bool:
     expected = _expected_password()
-    if not expected:
-        return True  # no password configured -> open (local use)
-    if st.session_state.get("authed"):
+    if not expected or st.session_state.get("authed"):
         return True
-    st.title("📊 Portfolio Risk Report")
+    st.title("📊 Portfolio Risk")
     pw = st.text_input("Password", type="password")
     if pw and pw == expected:
         st.session_state["authed"] = True
@@ -56,119 +66,267 @@ def _check_password() -> bool:
     return False
 
 
-if not _check_password():
+if not _gate():
     st.stop()
 
-
-# ----------------------------------------------------------------------
-# Main UI
-# ----------------------------------------------------------------------
-st.title("📊 Portfolio Risk Report")
+st.title("📊 Portfolio Risk")
 st.warning(
     "**Not investment advice · Internal use only.** Figures are model estimates "
-    "built from free, best-effort market data (Yahoo Finance) that may be "
-    "delayed, incomplete, or wrong. Verify before acting.",
+    "from free, best-effort market data (Yahoo Finance) that may be delayed, "
+    "incomplete, or wrong. Verify before acting.",
     icon="⚠️",
 )
-st.caption(
-    "Upload a broker position export (the 'Intraday Position' CSV — account, "
-    "symbol, and quantities). The tool prices the book with free market data "
-    "and generates a two-page risk tearsheet."
-)
 
+# --------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.header("Options")
-    name = st.text_input("Portfolio name", value="",
-                         help="Defaults to the account number in the file.")
-    aum_m = st.number_input("AUM ($M, optional)", min_value=0.0, value=0.0,
-                            step=1.0, help="Enables % AUM columns. 0 = use % gross.")
-    asof_override = st.date_input("As-of date (optional)", value=None,
-                                  help="Defaults to the date in the filename.")
-    with_factors = st.toggle("Factor model, stress & VaR (page 2)", value=True)
-    with_hedge = st.toggle("Hedge-basket suggestion", value=True,
-                           disabled=not with_factors)
-    alerts_file = st.file_uploader("Risk-limit config (optional JSON)",
-                                   type=["json"])
-    st.divider()
-    st.caption("First run for a new book takes a few minutes (market-data "
-               "fetch); repeat runs are cached and fast.")
+    st.header("Run")
+    name = st.text_input("Portfolio name", value="")
+    aum_m = st.number_input("AUM ($M, optional)", min_value=0.0, value=0.0, step=1.0)
+    asof_override = st.date_input("As-of date (optional)", value=None)
+    with_factors = st.toggle("Factor model, stress & VaR", value=True)
+    with_hedge = st.toggle("Hedge suggestion", value=True, disabled=not with_factors)
+    alerts_file = st.file_uploader("Risk-limit config (JSON)", type=["json"])
+    uploaded = st.file_uploader("Position CSV", type=["csv"])
+    run = st.button("Generate report", type="primary", disabled=uploaded is None)
+    st.caption("First run for a new book takes a few minutes; repeats are cached.")
 
-uploaded = st.file_uploader("Position CSV", type=["csv"])
 
-if uploaded is None:
-    st.info("Upload a position CSV to begin.")
+def _do_run():
+    work = Path(tempfile.mkdtemp(prefix="riskreport_"))
+    csv_path = work / uploaded.name
+    csv_path.write_bytes(uploaded.getbuffer())
+    alerts_path = None
+    if alerts_file is not None:
+        alerts_path = work / "alerts.json"
+        alerts_path.write_bytes(alerts_file.getbuffer())
+
+    lines: list[str] = []
+    status = st.status("Running…", expanded=True)
+    box = status.empty()
+
+    def prog(msg):
+        lines.append(msg)
+        box.code("\n".join(lines))
+
+    try:
+        res = generate_report(
+            csv_path,
+            aum=(aum_m * 1e6) if aum_m else None,
+            name=name or None,
+            asof=asof_override if isinstance(asof_override, date) else None,
+            out_dir=OUT_DIR, cache_dir=CACHE_DIR, alerts_path=alerts_path,
+            no_factors=not with_factors, no_hedge=not with_hedge, progress=prog,
+        )
+        status.update(label=f"Done in {res.elapsed_s:.0f}s", state="complete",
+                      expanded=False)
+        st.session_state["result"] = res
+    except Exception as exc:
+        status.update(label="Failed", state="error")
+        st.error(f"Report generation failed: {exc}")
+
+
+if run:
+    _do_run()
+
+result = st.session_state.get("result")
+
+
+# =====================================================================
+# Tab renderers
+# =====================================================================
+def render_report(res):
+    if res.alert_hits:
+        st.error("⚠ **Risk limit breach(es):**\n\n"
+                 + "\n".join(f"- {x}" for x in res.alert_hits))
+
+    basis_label = st.radio("Exposure basis", list(BASIS_COLUMNS), horizontal=True,
+                           help="Cash = market value · Delta-adjusted = economic "
+                                "exposure · Beta-adjusted = delta-adj × beta vs SPY")
+    col = BASIS_COLUMNS[basis_label]
+    iss = res.analytics.issuers
+    summ = basis_summary(iss, col)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"Long ({basis_label})", _m(summ["long"]))
+    c2.metric("Short", _m(summ["short"]))
+    c3.metric("Gross", _m(summ["gross"]))
+    c4.metric("Net", _m(summ["net"]))
+    if summ["coverage"] < 0.999:
+        st.caption(f"{basis_label} covers {summ['coverage']:.0%} of gross "
+                   "delta-adjusted exposure (names without a beta are excluded).")
+
+    st.subheader("Exposure breakdown")
+    cats = [("By sector", "sector", None), ("By market cap", "cap_bucket", CAP_ORDER),
+            ("By region", "region", None)]
+    cols = st.columns(3)
+    for (title, cat_col, order), c in zip(cats, cols):
+        tbl = basis_category_table(iss, cat_col, col, order=order)
+        with c:
+            st.markdown(f"**{title}**")
+            chart_df = tbl.set_index(cat_col)["net"] / 1e6
+            st.bar_chart(chart_df, horizontal=True, height=240)
+            show = tbl[[cat_col, "long", "short", "net"]].copy()
+            for k in ("long", "short", "net"):
+                show[k] = show[k].map(_m)
+            st.dataframe(show, hide_index=True, width="stretch")
+
+    st.subheader("Top issuers")
+    lc, sc = st.columns(2)
+    for side, c in (("long", lc), ("short", sc)):
+        sel, total = basis_top_issuers(iss, col, side, n=10)
+        rows = [{"Issuer": str(r["name"] or r["underlying"])[:30],
+                 "Sector": str(r["sector"])[:20], "$": _m(r[col]),
+                 "% side": f"{abs(r[col])/total:.1%}" if total else "—"}
+                for _, r in sel.iterrows()]
+        with c:
+            st.markdown(f"**Top {side}s**")
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    st.download_button("⬇ Download PDF", data=Path(res.pdf_path).read_bytes(),
+                       file_name=Path(res.pdf_path).name, mime="application/pdf")
+    if res.issues:
+        with st.expander(f"Data-quality notes ({len(res.issues)})"):
+            for msg in res.issues:
+                st.write(f"- {msg}")
+
+
+def render_trends():
+    ts = load_trend_series(SNAP_DIR)
+    if ts.empty:
+        st.info("No snapshots yet — run a report to start the history.")
+        return
+    st.caption(f"{len(ts)} snapshot(s): {ts['date'].min()} → {ts['date'].max()}. "
+               "Each report run archives one; history builds as you run daily.")
+    if len(ts) < 2:
+        st.warning("Only one snapshot so far — trends need at least two runs on "
+                   "different as-of dates.")
+    picks = st.multiselect("Metrics", list(TREND_METRICS),
+                           default=["Net exposure", "Gross exposure",
+                                    "Predicted vol (ann.)"])
+    dollar = {k: v for k, v in TREND_METRICS.items()
+              if k in picks and v[2] == "$M"}
+    other = {k: v for k, v in TREND_METRICS.items()
+             if k in picks and v[2] != "$M"}
+    idx = pd.to_datetime(ts["date"])
+    if dollar:
+        df = pd.DataFrame({k: ts[c] / s for k, (c, s, _u) in dollar.items()})
+        df.index = idx
+        st.markdown("**$M metrics**")
+        st.line_chart(df, height=280)
+    for k, (c, s, _u) in other.items():
+        df = pd.DataFrame({k: ts[c] / s}); df.index = idx
+        st.markdown(f"**{k}**")
+        st.line_chart(df, height=200)
+
+
+def render_benchmark(res):
+    if res.factor_risk is None or res.model is None:
+        st.info("Benchmark-relative risk needs the factor model — re-run with "
+                "the factor model enabled.")
+        return
+    c1, c2 = st.columns([2, 1])
+    bench_label = c1.selectbox("Benchmark", list(BENCHMARK_CHOICES))
+    bench = BENCHMARK_CHOICES[bench_label]
+    notional_m = c2.number_input("Benchmark notional ($M, 0 = beta-match)",
+                                 min_value=0.0, value=0.0, step=5.0)
+    try:
+        br = active_risk(res.factor_risk, res.model, bench,
+                         notional=(notional_m * 1e6) if notional_m else None)
+    except Exception as exc:
+        st.error(f"Could not compute active risk: {exc}")
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Tracking error (ann.)", _m(br.tracking_error),
+              help="Annualized $ volatility of the book minus the benchmark.")
+    m2.metric("TE (% of notional)", f"{br.te_pct:.1%}")
+    m3.metric("Beta to benchmark", f"{br.beta_to_benchmark:.2f}")
+    m4.metric("Bench notional", _m(br.notional))
+    st.caption(f"Book vol {_m(br.port_vol)} vs benchmark vol {_m(br.bench_vol)} · "
+               f"{br.active_specific_share:.0%} of active variance is stock-specific · "
+               f"default notional beta-matches the benchmark to the book's market exposure.")
+
+    st.subheader("Active factor exposure (portfolio − benchmark)")
+    ae = (br.active_exposures / 1e6)
+    chart = ae["active"].rename("Active $M")
+    st.bar_chart(chart, horizontal=True, height=280)
+    show = ae.copy()
+    for k in show.columns:
+        show[k] = show[k].map(lambda v: f"{v:,.1f}")
+    show.columns = [f"{c} $M" for c in show.columns]
+    st.dataframe(show, width="stretch")
+
+
+def render_optimizer(res):
+    if res.factor_risk is None or res.model is None:
+        st.info("The optimizer needs the factor model — re-run with it enabled.")
+        return
+    obj = st.selectbox("Objective", OBJECTIVES)
+    c1, c2, c3 = st.columns(3)
+    turnover_m = c1.number_input("Max turnover ($M)", min_value=0.0, value=15.0, step=5.0)
+    per_name_m = c2.number_input("Max per name ($M)", min_value=0.0, value=6.0, step=1.0)
+    mkt_cap_m = c3.number_input("Max |market| exposure ($M, 0 = none)",
+                                min_value=0.0, value=0.0, step=1.0)
+    bench = None
+    if obj == "Minimize tracking error":
+        bench_label = st.selectbox("Benchmark", list(BENCHMARK_CHOICES), key="opt_bench")
+        bench = BENCHMARK_CHOICES[bench_label]
+
+    if not st.button("Optimize", type="primary"):
+        return
+    caps = {"Mkt-RF": mkt_cap_m * 1e6} if mkt_cap_m else None
+    try:
+        opt = optimize_overlay(
+            res.factor_risk, res.model, res.stats, objective=obj,
+            turnover_max=(turnover_m * 1e6) if turnover_m else None,
+            max_per_name=(per_name_m * 1e6) if per_name_m else None,
+            factor_caps=caps, benchmark_ticker=bench,
+        )
+    except Exception as exc:
+        st.error(f"Optimization failed: {exc}")
+        return
+
+    if not opt.success:
+        st.warning("Solver did not fully satisfy the constraints — they may be "
+                   "infeasible together (e.g. a tight market cap with a low "
+                   "turnover cap). Loosen one and retry. Showing best effort.")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Predicted vol", _m(opt.vol_after),
+              delta=_m(opt.vol_after - opt.vol_before), delta_color="inverse")
+    m2.metric("Turnover", _m(opt.turnover))
+    m3.metric("Trades", f"{len(opt.trades)}")
+    if opt.binding:
+        st.caption("Binding constraints: " + "; ".join(opt.binding))
+
+    st.subheader("Proposed trades")
+    if len(opt.trades):
+        show = opt.trades.copy()
+        show["notional"] = show["notional"].map(_m)
+        show["shares"] = show["shares"].map(lambda v: f"{v:+,}" if v is not None else "—")
+        st.dataframe(show.rename(columns={"etf": "ETF", "notional": "$ notional",
+                                          "shares": "~shares"}),
+                     hide_index=True, width="stretch")
+    else:
+        st.write("No trades — the book already meets the objective within constraints.")
+
+    st.subheader("Factor exposure: before → after ($M)")
+    ex = pd.DataFrame({"before": opt.exposures_before / 1e6,
+                       "after": opt.exposures_after / 1e6})
+    st.bar_chart(ex, height=280)
+
+
+# =====================================================================
+if result is None:
+    st.info("Upload a position CSV in the sidebar and click **Generate report**.")
     st.stop()
 
-if not st.button("Generate report", type="primary"):
-    st.stop()
-
-# persist the upload under its original name so the as-of date parses from it
-work_dir = Path(tempfile.mkdtemp(prefix="riskreport_"))
-csv_path = work_dir / uploaded.name
-csv_path.write_bytes(uploaded.getbuffer())
-
-alerts_path = None
-if alerts_file is not None:
-    alerts_path = work_dir / "alerts.json"
-    alerts_path.write_bytes(alerts_file.getbuffer())
-
-log_lines: list[str] = []
-status = st.status("Running…", expanded=True)
-log_box = status.empty()
-
-
-def _progress(msg: str) -> None:
-    log_lines.append(msg)
-    log_box.code("\n".join(log_lines))
-
-
-try:
-    result = generate_report(
-        csv_path,
-        aum=(aum_m * 1e6) if aum_m else None,
-        name=name or None,
-        asof=asof_override if isinstance(asof_override, date) else None,
-        out_dir=OUT_DIR,
-        cache_dir=CACHE_DIR,
-        alerts_path=alerts_path,
-        no_factors=not with_factors,
-        no_hedge=not with_hedge,
-        progress=_progress,
-    )
-    status.update(label=f"Done in {result.elapsed_s:.0f}s", state="complete",
-                  expanded=False)
-except Exception as exc:  # surface the failure instead of a blank screen
-    status.update(label="Failed", state="error")
-    st.error(f"Report generation failed: {exc}")
-    st.stop()
-
-# --------------------------------------------------------------- results
-h = result.headline
-if result.alert_hits:
-    st.error("⚠ **Risk limit breach(es):**\n\n"
-             + "\n".join(f"- {x}" for x in result.alert_hits))
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Net Δ-adj exposure", f"${h['exp_net']/1e6:,.1f}M")
-c2.metric("Gross Δ-adj exposure", f"${h['exp_gross']/1e6:,.1f}M")
-c3.metric("Predicted vol (ann.)",
-          f"${h['vol_total']/1e6:,.1f}M" if h.get("vol_total") else "—")
-c4.metric("1-day 95% VaR",
-          f"${h['var_95']/1e6:,.2f}M" if h.get("var_95") else "—")
-
-pdf_bytes = Path(result.pdf_path).read_bytes()
-st.download_button("⬇ Download PDF", data=pdf_bytes,
-                   file_name=Path(result.pdf_path).name,
-                   mime="application/pdf", type="primary")
-
-with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-    for i, page in enumerate(pdf.pages):
-        img = page.to_image(resolution=150)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        st.image(buf.getvalue(), caption=f"Page {i + 1}", use_container_width=True)
-
-if result.issues:
-    with st.expander(f"Data-quality notes ({len(result.issues)})"):
-        for msg in result.issues:
-            st.write(f"- {msg}")
+tab_report, tab_trends, tab_bench, tab_opt = st.tabs(
+    ["📄 Report", "📈 Trends", "🎯 Benchmark", "🛠 Optimizer"])
+with tab_report:
+    render_report(result)
+with tab_trends:
+    render_trends()
+with tab_bench:
+    render_benchmark(result)
+with tab_opt:
+    render_optimizer(result)

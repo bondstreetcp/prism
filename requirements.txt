@@ -2,7 +2,7 @@
 # exist for its Python) while staying within versions this tool was tested on.
 # pct_change calls are pinned to fill_method=None in code, so the pandas 2.x/3.x
 # gap-fill behavior change does NOT affect results across this range.
-streamlit>=1.40,<2
+streamlit>=1.56,<2
 pandas>=2.2,<4
 numpy>=1.26,<3
 scipy>=1.11,<2

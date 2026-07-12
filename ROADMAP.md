@@ -75,6 +75,29 @@ though a historical-simulation VaR is cheap for us to add and useful.
 * **Scheduling**: run run_report.py daily so attribution/history accrue
   automatically (Claude Code /schedule or OS task scheduler).
 
+## Tier 2b — interactive app views (SHIPPED 2026-07-12)
+
+Built as Streamlit tabs in `app.py`; on-screen, not PDF.
+
+* ~~**Time-series trends**~~ (`riskreport/trends.py`): reads the snapshot
+  store, plots net/gross/long/short exposure, predicted vol, VaR, factor
+  share, bias ratio, issuer count over time. History accrues from daily runs.
+* ~~**Benchmark-relative / active risk**~~ (`riskreport/benchmark.py`):
+  active factor exposure (portfolio − benchmark), tracking error, beta to the
+  benchmark, active variance factor/specific split. Benchmark = an ETF held
+  at a notional (default beta-matches the book's market exposure).
+* ~~**Portfolio optimizer**~~ (`riskreport/optimizer.py`, scipy SLSQP):
+  min total risk / min factor risk / min tracking error over a tradable ETF
+  universe, with a constraint library (max turnover, per-name size, factor
+  exposure caps incl. market-neutral); returns a trade list + before/after.
+* ~~**Cash / delta-adj / beta-adj basis toggle**~~ and redefined market-cap
+  buckets (Nano <$50M · Micro $50–200M · Small $200M–2B · Mid $2–10B ·
+  Large $10–200B · Mega >$200B).
+
+Natural next builds: macro factor overlay (rates/inflation/oil/USD/credit
+via ETF proxies), factor screener over ETF/index universes, custom thematic
+tags, and an AI risk-narrative + MCP server (matches their AI-native pivot).
+
 ## Tier 3 — requires licensed data; out of scope for a free-data clone
 
 * Commercial factor models (Axioma, Wolfe QES, MSCI Barra) and model

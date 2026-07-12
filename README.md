@@ -12,10 +12,21 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Opens in your browser: drop in a position CSV, watch progress, view and
-download the PDF. To host it privately for colleagues, see [DEPLOY.md](DEPLOY.md)
-(Render / Railway / Fly / a VPS behind Tailscale — a few dollars a month).
-Set an `APP_PASSWORD` env var to gate access.
+Opens in your browser with four tabs:
+
+* **Report** — on-screen exposures/concentration with a **cash / delta-adjusted
+  / beta-adjusted** basis toggle, plus the downloadable PDF.
+* **Trends** — net/gross exposure, predicted vol, VaR, factor share, and bias
+  ratio over time (builds as you run daily; each run archives a snapshot).
+* **Benchmark** — active factor exposure vs a benchmark ETF, tracking error,
+  and beta to the benchmark.
+* **Optimizer** — minimize total/factor risk or tracking error over a tradable
+  ETF universe under a constraint library (turnover, per-name size, factor
+  caps, market-neutral); returns a trade list and before/after.
+
+To host it privately for colleagues, see [DEPLOY.md](DEPLOY.md) (Render /
+Railway / Fly / a VPS behind Tailscale — a few dollars a month). Set an
+`APP_PASSWORD` env var to gate access.
 
 ## Command line
 

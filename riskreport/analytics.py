@@ -27,11 +27,12 @@ DEFAULT_IV = 0.35
 IV_SANITY = (0.01, 5.0)
 
 CAP_BUCKETS = [
-    ("Mega (>$25B)", 25e9, math.inf),
-    ("Large ($5-25B)", 5e9, 25e9),
-    ("Medium ($1-5B)", 1e9, 5e9),
-    ("Small ($250M-1B)", 250e6, 1e9),
-    ("Micro (<$250M)", 0, 250e6),
+    ("Mega (>$200B)", 200e9, math.inf),
+    ("Large ($10-200B)", 10e9, 200e9),
+    ("Mid ($2-10B)", 2e9, 10e9),
+    ("Small ($200M-2B)", 200e6, 2e9),
+    ("Micro ($50-200M)", 50e6, 200e6),
+    ("Nano (<$50M)", 0, 50e6),
 ]
 
 NORTH_AMERICA = {"United States", "Canada", "Mexico"}
@@ -80,9 +81,14 @@ class PortfolioAnalytics:
 
 
 def _cap_bucket(market_cap) -> str:
-    if market_cap is None or not math.isfinite(float(market_cap or math.nan)):
+    if market_cap is None:
         return "Unknown"
-    mc = float(market_cap)
+    try:
+        mc = float(market_cap)
+    except (TypeError, ValueError):
+        return "Unknown"
+    if not math.isfinite(mc) or mc < 0:
+        return "Unknown"
     for label, lo, hi in CAP_BUCKETS:
         if lo <= mc < hi:
             return label
@@ -105,6 +111,78 @@ def _sector(profile: dict) -> str:
     if profile.get("quote_type") == "ETF":
         return "ETF/Index"
     return profile.get("sector") or "Unknown"
+
+
+# ----------------------------------------------------------------------
+# Exposure-basis helpers (Cash / Delta-adjusted / Beta-adjusted)
+# Each maps to a column already computed on the issuer / position frames:
+#   Cash (MV)      -> market value (equity qty*px; option qty*100*premium)
+#   Delta-adjusted -> equity MV + option delta notional
+#   Beta-adjusted  -> delta-adjusted * beta vs SPY
+# ----------------------------------------------------------------------
+BASIS_COLUMNS = {
+    "Cash (MV)": "mv",
+    "Delta-adjusted": "exposure",
+    "Beta-adjusted": "beta_exposure",
+}
+
+CAP_ORDER = [label for label, _, _ in CAP_BUCKETS] + ["Unknown"]
+
+
+def basis_category_table(
+    issuers: pd.DataFrame, category_col: str, basis_col: str,
+    order: list[str] | None = None,
+) -> pd.DataFrame:
+    """Long/short/net/gross of `basis_col` grouped by a category, per issuer.
+
+    NaNs (e.g. beta_exposure for names without a beta) count as zero, so the
+    caller should surface coverage separately for the beta-adjusted basis."""
+    s = issuers.assign(_b=issuers[basis_col].fillna(0.0))
+    g = s.groupby(category_col).agg(
+        long=("_b", lambda x: x[x > 0].sum()),
+        short=("_b", lambda x: x[x < 0].sum()),
+        net=("_b", "sum"),
+        gross=("_b", lambda x: x.abs().sum()),
+        n_issuers=("underlying", "count"),
+    )
+    gross_total = float(g["gross"].sum())
+    g["pct_gross"] = g["gross"] / gross_total if gross_total else 0.0
+    g = g.sort_values("gross", ascending=False)
+    if order:
+        present = [x for x in order if x in g.index]
+        rest = [x for x in g.index if x not in order]
+        g = g.reindex(present + rest)
+    return g.reset_index()
+
+
+def basis_summary(issuers: pd.DataFrame, basis_col: str) -> dict:
+    """Long/short/gross/net totals of a basis, plus its coverage of gross."""
+    raw = issuers[basis_col]
+    s = raw.fillna(0.0)
+    long = float(s[s > 0].sum())
+    short = float(s[s < 0].sum())
+    # coverage = share of |delta-adj| exposure that has a value on this basis
+    delta_gross = float(issuers["exposure"].abs().sum()) or 1.0
+    covered = float(issuers.loc[raw.notna(), "exposure"].abs().sum())
+    return {
+        "long": long, "short": short,
+        "gross": long - short, "net": long + short,
+        "coverage": covered / delta_gross,
+    }
+
+
+def basis_top_issuers(
+    issuers: pd.DataFrame, basis_col: str, side: str, n: int = 10
+) -> tuple[pd.DataFrame, float]:
+    """Top `n` issuers on a basis for one side; returns (rows, side_total)."""
+    s = issuers.assign(_b=issuers[basis_col].fillna(0.0))
+    if side == "long":
+        sel = s[s["_b"] > 0].nlargest(n, "_b")
+        total = float(s.loc[s["_b"] > 0, "_b"].sum())
+    else:
+        sel = s[s["_b"] < 0].nsmallest(n, "_b")
+        total = abs(float(s.loc[s["_b"] < 0, "_b"].sum()))
+    return sel, total
 
 
 def build_analytics(
@@ -354,34 +432,17 @@ def build_analytics(
     }
 
     # ------------------------------------------------------------------
-    # Category tables (issuer-level, delta-adjusted)
+    # Category tables (issuer-level, delta-adjusted by default; the app can
+    # re-derive any of these on the cash / beta basis via basis_category_table)
     # ------------------------------------------------------------------
-    def category_table(col: str, order: list[str] | None = None) -> pd.DataFrame:
-        g = issuers.groupby(col).agg(
-            long=("exposure", lambda s: s[s > 0].sum()),
-            short=("exposure", lambda s: s[s < 0].sum()),
-            net=("exposure", "sum"),
-            gross=("exposure", lambda s: s.abs().sum()),
-            n_issuers=("underlying", "count"),
-        )
-        gross_total = float(g["gross"].sum())
-        g["pct_gross"] = g["gross"] / gross_total if gross_total else 0.0
-        g = g.sort_values("gross", ascending=False)
-        if order:
-            present = [x for x in order if x in g.index]
-            rest = [x for x in g.index if x not in order]
-            g = g.reindex(present + rest)
-        return g.reset_index()
-
-    cap_order = [label for label, _, _ in CAP_BUCKETS] + ["Unknown"]
-
     return PortfolioAnalytics(
         asof=asof,
         positions=df,
         issuers=issuers,
         summary=summary,
-        sector_table=category_table("sector"),
-        cap_table=category_table("cap_bucket", order=cap_order),
-        region_table=category_table("region"),
+        sector_table=basis_category_table(issuers, "sector", "exposure"),
+        cap_table=basis_category_table(issuers, "cap_bucket", "exposure",
+                                       order=CAP_ORDER),
+        region_table=basis_category_table(issuers, "region", "exposure"),
         issues=issues,
     )

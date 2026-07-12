@@ -31,6 +31,16 @@ class ReportResult:
     issues: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
     headline: dict = field(default_factory=dict)  # a few key figures for a UI
+    # in-memory objects so the app can build interactive views (basis toggle,
+    # benchmark-relative risk, optimizer) without recomputing anything heavy
+    analytics: object = None
+    factor_risk: object = None
+    model: object = None
+    scenarios: object = None
+    hedge: object = None
+    crowding: object = None
+    bias: object = None
+    stats: dict = field(default_factory=dict)
 
 
 def generate_report(
@@ -160,6 +170,7 @@ def generate_report(
         crowding = compute_crowding(analytics.issuers, analytics.positions)
     except Exception as exc:
         log(f"  crowding unavailable: {exc}")
+    crowding_obj = crowding
 
     from .alerts import check_alerts, load_config
     alert_hits: list[str] = []
@@ -203,4 +214,7 @@ def generate_report(
         pdf_path=pdf_path, asof=asof, name=name, summary=s,
         alert_hits=alert_hits, issues=analytics.issues,
         elapsed_s=elapsed, headline=headline,
+        analytics=analytics, factor_risk=factor_risk, model=model,
+        scenarios=scenarios, hedge=hedge, crowding=crowding_obj, bias=bias,
+        stats=stats,
     )
