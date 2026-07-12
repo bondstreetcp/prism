@@ -252,10 +252,13 @@ def parse_ibkr_csv(path: str | Path) -> ParseResult:
         if r[0] == "Account Information" and r[1] == "Data" and r[2].strip() == "Account":
             accounts.add(r[3].strip())
         elif r[0] == "Statement" and r[1] == "Data" and r[2].strip() == "Period":
-            m = re.search(r"[A-Z][a-z]+ \d{1,2}, \d{4}", r[3])
-            if m:
+            # A ranged Period ("January 1, 2026 - July 10, 2026") is common on
+            # monthly/YTD statements; positions are as-of the period END, so
+            # take the LAST date, not the first.
+            dates = re.findall(r"[A-Z][a-z]+ \d{1,2}, \d{4}", r[3])
+            if dates:
                 try:
-                    result.asof = datetime.strptime(m.group(), "%B %d, %Y").date()
+                    result.asof = datetime.strptime(dates[-1], "%B %d, %Y").date()
                 except ValueError:
                     pass
         elif r[0] == "Net Asset Value" and r[1] == "Data" and len(r) > 6:
@@ -336,3 +339,42 @@ def parse_positions(path: str | Path) -> ParseResult:
     if is_ibkr(path):
         return parse_ibkr_csv(path)
     return parse_positions_csv(path)
+
+
+def _pos_key(p: Position) -> str:
+    return f"OPT:{p.contract_key}" if p.kind == "option" else f"EQ:{p.underlying}"
+
+
+def merge_parse_results(results: list[ParseResult]) -> ParseResult:
+    """Consolidate several parsed books into one — for firmwide/multi-account
+    aggregation. Positions on the same underlying/contract sum across files;
+    cash and NAV sum where reported. Positions that net to zero drop out."""
+    merged = ParseResult(source="+".join(sorted({r.source for r in results})) or "merged")
+    book: dict[str, Position] = {}
+    accounts: list[str] = []
+    for r in results:
+        for p in r.positions:
+            k = _pos_key(p)
+            if k in book:
+                book[k].qty += p.qty
+            else:
+                book[k] = Position(**vars(p))
+        merged.issues.extend(r.issues)
+        accounts.extend(r.accounts)
+    merged.positions = [p for p in book.values() if p.qty != 0]
+    merged.accounts = sorted(set(accounts))
+
+    cashes = [r.cash for r in results if r.cash is not None]
+    navs = [r.nav for r in results if r.nav is not None]
+    merged.cash = sum(cashes) if cashes else None
+    merged.nav = sum(navs) if navs else None
+    if navs and len(navs) < len(results):
+        merged.nav = None  # incomplete NAV coverage — don't report a partial sum
+    asofs = [r.asof for r in results if r.asof]
+    merged.asof = max(asofs) if asofs else None
+    if len({r.asof for r in results if r.asof}) > 1:
+        merged.issues.append(
+            "Aggregated files have different as-of dates; using the latest "
+            f"({merged.asof}). Positions are combined as-is."
+        )
+    return merged

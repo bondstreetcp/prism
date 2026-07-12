@@ -246,8 +246,9 @@ def render_tearsheet(
         y -= band_h + 8
 
     # ------------------------------------------------------- row 1: tables
-    denom = s["aum"] if s["aum"] else s["exp_gross"]
-    denom_label = "% AUM" if s["aum"] else "% Gross"
+    valid_aum = s["aum"] if (s["aum"] and s["aum"] > 0) else None
+    denom = valid_aum if valid_aum else s["exp_gross"]
+    denom_label = "% AUM" if valid_aum else "% Gross"
 
     exposure_rows = [
         ["Exposure", "MV $M", "Δ-adj $M", denom_label],
@@ -325,6 +326,8 @@ def render_tearsheet(
 
     # ------------------------------------------- row 3: top issuer tables
     aum = s.get("aum")  # net MV + cash, when known
+    if aum is not None and aum <= 0:      # a negative/zero AUM can't scale %
+        aum = None
     pct_label = "% AUM" if aum else None
 
     def top_table(side: str) -> list[list[str]]:

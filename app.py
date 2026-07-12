@@ -31,6 +31,7 @@ from riskreport.narrative import (
 from riskreport.optimizer import OBJECTIVES, optimize_overlay
 from riskreport.pipeline import generate_report
 from riskreport.screener import build_screen_frame, screen
+from riskreport.tags import parse_tags, theme_exposure
 from riskreport.trends import TREND_METRICS, load_trend_series
 
 st.set_page_config(page_title="Portfolio Risk", page_icon="📊", layout="wide")
@@ -95,15 +96,22 @@ with st.sidebar:
     with_factors = st.toggle("Factor model, stress & VaR", value=True)
     with_hedge = st.toggle("Hedge suggestion", value=True, disabled=not with_factors)
     alerts_file = st.file_uploader("Risk-limit config (JSON)", type=["json"])
-    uploaded = st.file_uploader("Position CSV", type=["csv"])
-    run = st.button("Generate report", type="primary", disabled=uploaded is None)
+    uploaded = st.file_uploader("Position CSV(s)", type=["csv"],
+                                accept_multiple_files=True,
+                                help="Upload one file, or several to aggregate "
+                                     "multiple accounts (Goldman + IBKR) into one book.")
+    run = st.button("Generate report", type="primary", disabled=not uploaded)
     st.caption("First run for a new book takes a few minutes; repeats are cached.")
 
 
 def _do_run():
     work = Path(tempfile.mkdtemp(prefix="riskreport_"))
-    csv_path = work / uploaded.name
-    csv_path.write_bytes(uploaded.getbuffer())
+    paths = []
+    for uf in uploaded:
+        p = work / uf.name
+        p.write_bytes(uf.getbuffer())
+        paths.append(p)
+    csv_arg = paths if len(paths) > 1 else paths[0]
     alerts_path = None
     if alerts_file is not None:
         alerts_path = work / "alerts.json"
@@ -119,7 +127,7 @@ def _do_run():
 
     try:
         res = generate_report(
-            csv_path,
+            csv_arg,
             cash=(cash_m * 1e6) if cash_m else None,
             name=name or None,
             asof=asof_override if isinstance(asof_override, date) else None,
@@ -181,6 +189,8 @@ def render_report(res):
 
     st.subheader("Top issuers")
     aum = res.summary.get("aum")
+    if aum is not None and aum <= 0:      # a negative/zero AUM can't scale %
+        aum = None
     pct_col = "% AUM" if aum else "% side"
     lc, sc = st.columns(2)
     for side, c in (("long", lc), ("short", sc)):
@@ -405,6 +415,58 @@ def _llm_key():
     return key
 
 
+def render_themes(res):
+    st.caption("Group the book by your own themes. Upload a CSV mapping tickers "
+               "to themes — `Ticker,Theme` per row; a ticker may appear on "
+               "several rows to sit in several themes. Exposure is delta-adjusted "
+               "and overlaps across themes by design.")
+    up = st.file_uploader("Theme map CSV", type=["csv"], key="tags_csv")
+    with st.expander("Format example"):
+        st.code("Ticker,Theme\nNVDA,AI\nNVDA,Semis\nMSFT,AI\nXOM,Energy",
+                language="text")
+    if up is None:
+        st.info("Upload a theme map to see grouped exposure.")
+        return
+    try:
+        with tempfile.NamedTemporaryFile(
+                "wb", suffix=".csv", delete=False) as tf:
+            tf.write(up.getvalue())
+            tags_path = tf.name
+        tags = parse_tags(tags_path)
+    except Exception as exc:
+        st.error(f"Could not read theme map: {exc}")
+        return
+    finally:
+        try:
+            os.unlink(tags_path)
+        except (OSError, NameError):
+            pass
+    if not tags:
+        st.warning("No ticker→theme rows found in that file.")
+        return
+
+    table, coverage = theme_exposure(res.analytics.issuers, tags)
+    st.caption(f"{len(tags)} tickers tagged across {table.shape[0]} themes · "
+               f"{coverage:.0%} of gross exposure is tagged.")
+    if table.empty:
+        st.warning("None of the tagged tickers are held in this book.")
+        return
+
+    disp = pd.DataFrame({
+        "Theme": table["theme"],
+        "Long": table["long"].map(_m),
+        "Short": table["short"].map(_m),
+        "Net": table["net"].map(_m),
+        "Gross": table["gross"].map(_m),
+        "Names": table["n_issuers"],
+        "% Gross": table["pct_gross"].map(lambda v: f"{v:.0%}"),
+    })
+    st.dataframe(disp, hide_index=True, width="stretch")
+    st.markdown("**Net exposure by theme ($M)**")
+    st.bar_chart(table.set_index("theme")["net"] / 1e6,
+                 horizontal=True, height=max(240, 32 * len(table)))
+
+
 def render_ai(res):
     st.caption("An AI risk analyst reads the computed report — ask it questions "
                "or generate a commentary. Uses GLM (Zhipu / z.ai) by default. "
@@ -465,9 +527,9 @@ if result is None:
     st.stop()
 
 (tab_report, tab_trends, tab_bench, tab_opt, tab_macro, tab_screen,
- tab_narr) = st.tabs(
+ tab_themes, tab_narr) = st.tabs(
     ["📄 Report", "📈 Trends", "🎯 Benchmark", "🛠 Optimizer", "📉 Macro",
-     "🔎 Screener", "🤖 AI"])
+     "🔎 Screener", "🏷 Themes", "🤖 AI"])
 with tab_report:
     render_report(result)
 with tab_trends:
@@ -480,5 +542,7 @@ with tab_macro:
     render_macro(result)
 with tab_screen:
     render_screener(result)
+with tab_themes:
+    render_themes(result)
 with tab_narr:
     render_ai(result)

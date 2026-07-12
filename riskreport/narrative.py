@@ -190,10 +190,14 @@ def generate_narrative(facts: dict, api_key=None, model=None, base_url=None,
 
 
 def chat(history: list[dict], facts: dict, reference: dict, api_key=None,
-         model=None, base_url=None, max_tokens: int = 1500) -> str:
-    """One assistant turn given the running chat `history` (role/content dicts)."""
+         model=None, base_url=None, max_tokens: int = 1500,
+         max_turns: int = 16) -> str:
+    """One assistant turn given the running chat `history` (role/content dicts).
+
+    Only the last `max_turns` messages are sent so a long session can't grow
+    the request unbounded (the risk snapshot below already carries the state)."""
     import json
     context = (CHAT_SYSTEM_PROMPT + "\n\nRISK SNAPSHOT:\n" + json.dumps(facts, indent=1)
                + "\n\nFACTOR REFERENCE:\n" + json.dumps(reference, indent=1))
-    messages = [{"role": "system", "content": context}] + history
+    messages = [{"role": "system", "content": context}] + history[-max_turns:]
     return _complete(messages, api_key, model, base_url, max_tokens, temperature=0.4)

@@ -25,7 +25,11 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Opens in your browser with four tabs:
+Upload one CSV, or several at once — multiple files (e.g. a Goldman book plus
+an IBKR book) are **aggregated into one consolidated book**, netting positions
+by issuer/contract and summing cash.
+
+Opens in your browser with these tabs:
 
 * **Report** — on-screen exposures/concentration with a **cash / delta-adjusted
   / beta-adjusted** basis toggle, plus the downloadable PDF.
@@ -41,6 +45,9 @@ Opens in your browser with four tabs:
   controlled — "$ P&L per +1% move."
 * **Screener** — screen the fitted universe (your names + hedge/macro ETFs) by
   factor loading, beta, and model fit to find hedges or replacements.
+* **Themes** — upload your own `Ticker,Theme` map and see delta-adjusted
+  long/short/net/gross exposure grouped by theme (a name can sit in several
+  themes; exposures overlap by design), with tag coverage.
 * **AI** — an AI risk analyst reads the computed report: generate a
   plain-English commentary or **chat** ("how would I lower the net short
   momentum exposure?"). Uses GLM (Zhipu / z.ai) via its OpenAI-compatible API;
@@ -56,7 +63,10 @@ Railway / Fly / a VPS behind Tailscale — a few dollars a month). Set an
 ```
 python run_report.py "Intraday Position_2026-07-07_0109PM.csv"
 python run_report.py positions.csv --aum 25000000 --name "My Fund"
+python run_report.py goldman.csv ibkr.csv --name "Consolidated"   # aggregate
 ```
+
+Pass several CSVs to consolidate multiple accounts/brokers into one book.
 
 What-if simulation (before/after exposures, factor loadings, vol, VaR):
 
@@ -155,9 +165,35 @@ riskreport/
   parse.py       broker CSV -> Position records (equities + OCC-style options)
   marketdata.py  yfinance fetch layer with on-disk cache (cache/)
   analytics.py   pricing, delta-adjusted exposures, aggregations
+  factors.py     style factor model (Ken French library, EWMA + shrinkage)
+  scenarios.py   stress grid + historical-simulation VaR
+  macro.py       macro-factor overlay (ETF proxies, market-controlled)
+  tags.py        custom thematic tags -> grouped exposure
+  narrative.py   LLM commentary + chat (GLM / OpenAI-compatible)
+  mcp_server.py  MCP server exposing the analytics to AI assistants
   tearsheet.py   matplotlib + reportlab one-page PDF
   snapshot.py    archives each run under snapshots/<date>/
 run_report.py    CLI entry point
+app.py           Streamlit web app
+```
+
+## MCP server (query the book from an AI assistant)
+
+An [MCP](https://modelcontextprotocol.io) server exposes the analytics as tools
+so an assistant (Claude Desktop, etc.) can load a book and query its risk —
+`load_book`, `exposures`, `factor_exposures`, `risk_summary`, `top_issuers`,
+`macro_exposures`, `optimize`.
+
+```
+pip install mcp
+python -m riskreport.mcp_server        # stdio
+```
+
+MCP client config (a stdio server):
+
+```json
+{ "command": "python", "args": ["-m", "riskreport.mcp_server"],
+  "cwd": "<this project>" }
 ```
 
 ## History / performance panels

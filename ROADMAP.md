@@ -70,8 +70,10 @@ though a historical-simulation VaR is cheap for us to add and useful.
   true 13F hedge-fund-overlap crowding (download quarterly SEC 13F datasets +
   ticker→CUSIP map + distinct-filer aggregation) is a heavier lift left for
   later — the ticker→CUSIP mapping is the free-data sticking point.
-* **Custom classifications/tags**: user-supplied issuer → theme mapping,
-  grouped exposure by theme.
+* ~~**Custom classifications/tags**~~ **SHIPPED 2026-07-12**
+  (`riskreport/tags.py`, app **Themes** tab): upload a `Ticker,Theme` map →
+  delta-adjusted long/short/net/gross exposure grouped by theme (names can sit
+  in several themes; exposures overlap by design), with tag coverage.
 * **Scheduling**: run run_report.py daily so attribution/history accrue
   automatically (Claude Code /schedule or OS task scheduler).
 
@@ -103,14 +105,25 @@ Built as Streamlit tabs in `app.py`; on-screen, not PDF.
 * ~~**Factor screener**~~ (`riskreport/screener.py`): screen the fitted-loadings
   universe (book names + hedge/macro ETFs) by factor loading, beta, R², sector,
   held/not-held; find hedges or replacements with a target profile.
-* ~~**AI risk narrative**~~ (`riskreport/narrative.py`): the Anthropic SDK feeds
-  the report's computed metrics to Claude (default claude-opus-4-8) for a
-  plain-English risk commentary. Optional (`ANTHROPIC_API_KEY`), ~$0.02–0.03/call.
-  Matches their AI-native "AI Teammates" pivot.
+* ~~**AI risk narrative + chat**~~ (`riskreport/narrative.py`): feeds the
+  report's computed metrics to an LLM for a plain-English risk commentary and
+  a multi-turn **chat** ("how would I lower the net short momentum exposure?").
+  Uses GLM (Zhipu / z.ai) via its OpenAI-compatible API by default —
+  provider-agnostic through `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL`.
+  Optional. Matches their AI-native "AI Teammates" pivot.
 
-Natural next builds: an MCP server exposing the book to AI assistants (their
-other AI-native surface), custom thematic tags, multi-account aggregation,
-and forecasts/alpha into the optimizer.
+## Tier 2d — AI-native surface & aggregation (SHIPPED 2026-07-12)
+
+* ~~**MCP server**~~ (`riskreport/mcp_server.py`): stdio MCP server exposing the
+  analytics as tools (`load_book`, `exposures`, `factor_exposures`,
+  `risk_summary`, `top_issuers`, `macro_exposures`, `optimize`) so an AI
+  assistant can load a book and query its risk — their other AI-native surface.
+* ~~**Multi-account aggregation**~~ (`parse.merge_parse_results`): pass several
+  broker CSVs (Goldman + IBKR, multiple accounts) to consolidate into one book,
+  netting positions by issuer/contract and summing cash — CLI and app.
+
+Natural next builds: forecasts/alpha into the optimizer, scheduling, and true
+13F-overlap crowding.
 
 ## Tier 3 — requires licensed data; out of scope for a free-data clone
 

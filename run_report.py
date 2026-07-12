@@ -16,7 +16,9 @@ from riskreport.pipeline import generate_report
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("csv_path", help="Broker position export CSV")
+    ap.add_argument("csv_path", nargs="+",
+                    help="Broker position export CSV(s); multiple files are "
+                         "aggregated into one book")
     ap.add_argument("--aum", type=float, default=None,
                     help="Fund AUM in dollars (overrides net-MV + cash)")
     ap.add_argument("--cash", type=float, default=None,
@@ -37,7 +39,7 @@ def main() -> int:
     args = ap.parse_args()
 
     result = generate_report(
-        args.csv_path,
+        args.csv_path if len(args.csv_path) > 1 else args.csv_path[0],
         aum=args.aum,
         cash=args.cash,
         name=args.name,

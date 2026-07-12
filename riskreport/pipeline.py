@@ -16,7 +16,7 @@ from typing import Callable
 
 from .analytics import build_analytics
 from .marketdata import MarketData
-from .parse import parse_positions
+from .parse import merge_parse_results, parse_positions
 from .snapshot import save_snapshot
 from .tearsheet import render_tearsheet
 
@@ -46,7 +46,7 @@ class ReportResult:
 
 
 def generate_report(
-    csv_path: str | Path,
+    csv_path,  # str | Path | list of them (multiple files are aggregated)
     *,
     aum: float | None = None,
     cash: float | None = None,
@@ -62,7 +62,10 @@ def generate_report(
     log = progress or (lambda _msg: None)
     t0 = time.time()
 
-    parsed = parse_positions(csv_path)
+    if isinstance(csv_path, (list, tuple)):
+        parsed = merge_parse_results([parse_positions(p) for p in csv_path])
+    else:
+        parsed = parse_positions(csv_path)
     asof = asof or parsed.asof or date.today()
     # AUM/cash priority: explicit --aum > explicit --cash (net MV + cash) >
     # broker-reported NAV (IBKR) > broker file cash (net MV + file cash).
