@@ -1,0 +1,92 @@
+# Roadmap — Omega Point feature parity for risk
+
+Based on a July 2026 research sweep of OmegaPoint.ai (rebranded from ompnt.com
+Sept 2025), their support docs, and their GraphQL API surface (reconstructed
+from the open-source `omegapoint` Python client). 42 features catalogued;
+this maps the risk-relevant ones onto what this tool can realistically build.
+
+**Key insight from their API:** Omega Point has *no VaR endpoint*. Their core
+risk number is factor-model **predicted volatility, decomposed into factor vs
+idiosyncratic (specific) risk**, with per-security / per-group risk
+contributors. Parity on "risk" means a factor model, not a VaR engine —
+though a historical-simulation VaR is cheap for us to add and useful.
+
+## What we already cover (v1)
+
+* Exposures: long/short/gross/net MV and delta-adjusted, options overlay,
+  beta-adjusted net (their "portfolio beta" analytics, simplified)
+* Composition & concentration: sector/cap/region, top issuers, counts
+  (their `composition`/`concentration` endpoints)
+* Coverage/data-quality reporting (their coverage report → our footer notes)
+* Snapshot store (their position-set upload, minus the platform)
+
+## Tier 1 — the heart of Omega Point risk
+
+1. ~~**Factor exposures + risk decomposition.**~~ **SHIPPED 2026-07-11**
+   (`riskreport/factors.py`, tearsheet page 2): Ken French 5F+MOM daily
+   loadings, dollar factor exposures, predicted vol factor/specific split,
+   per-factor / per-sector / per-issuer risk contributions.
+   **Deepened 2026-07-12**: 8 factors (added short/long-term reversal,
+   selectable set), EWMA-weighted loadings + covariance, Ledoit-Wolf
+   covariance shrinkage, short-history sector-median shrinkage (models spins
+   instead of dropping them), and a realized-vs-predicted-vol bias test.
+   Result: factor share 86%→90%, bias ratio 1.00, well-conditioned cov.
+2. ~~**Stress tests / scenarios.**~~ **SHIPPED 2026-07-11**
+   (`riskreport/scenarios.py`): market ±5/10/15% via per-name beta × IV
+   +0/+25% grid, options fully revalued under Black-Scholes.
+3. ~~**VaR.**~~ **SHIPPED 2026-07-11**: 1-day 95/99% historical-simulation
+   VaR + expected shortfall, options fully repriced per scenario day.
+4. ~~**What-if simulator.**~~ **SHIPPED 2026-07-11** (`run_whatif.py`,
+   `riskreport/whatif.py`): apply a Symbol,Quantity trade list (or diff two
+   exports) → before/after/Δ exposures, factor exposures, predicted vol,
+   VaR, top issuer movers, one-page PDF.
+5. ~~**Performance & factor attribution.**~~ **SHIPPED 2026-07-11**
+   (`run_attribution.py`, `riskreport/attribution.py`): buy-and-hold daily
+   model P&L from archived snapshots split market / style / specific, with
+   issuer and sector contributors; window grows as daily snapshots accrue.
+   Ken French publication lag means the newest days are market-only
+   (disclosed); trading effect not measurable from quantity-only exports.
+
+**Tier 1 complete.** Next candidates are in Tier 2 below.
+
+## Tier 2 — feasible with free/public data, more work
+
+* ~~**Liquidity**~~ **SHIPPED 2026-07-12**: % ADV, days-to-liquidate
+  (median + 95th %ile at 20% participation), least-liquid issuer table on
+  the risk page; ADV from yfinance 60d volume.
+* ~~**Monitoring/alerts**~~ **SHIPPED 2026-07-12** (`riskreport/alerts.py`,
+  `--alerts config.json`): threshold checks on net/gross, issuer & sector
+  concentration, VaR, predicted vol, beta-adj net, days-to-liquidate.
+  Breaches print to console and render as a banner atop page 1.
+* ~~**Hedge-basket suggestion**~~ **SHIPPED 2026-07-12**
+  (`riskreport/hedge.py`): ridge-regularized solve for the ETF basket that
+  minimizes residual factor variance over a liquid menu; output is a trade
+  list ready to drop into run_whatif.py.
+* ~~**Crowding / squeeze**~~ **SHIPPED 2026-07-12** (`riskreport/crowding.py`):
+  short % of float, days-to-cover, month-over-month short-interest trend, and
+  institutional ownership from yfinance (same `.info` call as profiles, no
+  extra fetch). Panel on page 1 flags your crowded shorts (squeeze risk) and
+  a `max_crowded_short_pct_gross` alert. NOTE: this is a short-interest proxy;
+  true 13F hedge-fund-overlap crowding (download quarterly SEC 13F datasets +
+  ticker→CUSIP map + distinct-filer aggregation) is a heavier lift left for
+  later — the ticker→CUSIP mapping is the free-data sticking point.
+* **Custom classifications/tags**: user-supplied issuer → theme mapping,
+  grouped exposure by theme.
+* **Scheduling**: run run_report.py daily so attribution/history accrue
+  automatically (Claude Code /schedule or OS task scheduler).
+
+## Tier 3 — requires licensed data; out of scope for a free-data clone
+
+* Commercial factor models (Axioma, Wolfe QES, MSCI Barra) and model
+  mix-and-match; Noonum thematic indices; Quant Insight macro analytics
+* Borrow/financing rates and enhanced short interest (S3 Partners)
+* Full optimizer with market-impact costs and MIP constraints
+* OMS/PMS integrations (Eze, Enfusion), multi-manager aggregation, ESG sets
+
+## Notes
+
+* Their platform is API-first (GraphQL) with an MCP server for AI clients —
+  a future step here could expose this tool the same way so an AI assistant
+  can query the book.
+* Full research output (42 features, 12 categories, all sources):
+  archived from the research run 2026-07-11.

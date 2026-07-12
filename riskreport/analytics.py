@@ -1,0 +1,387 @@
+"""Portfolio analytics: pricing, delta-adjusted exposures, and aggregations.
+
+Conventions
+-----------
+* "Raw" market value: what the positions are worth (equity qty*spot; option
+  qty*100*premium). Long/short split is by sign of each position's MV.
+* "Delta-adjusted" exposure: equity MV for stocks; qty*100*delta*spot for
+  options — the equivalent underlying dollars at risk.
+* Issuer-level tables aggregate delta-adjusted exposure per underlying, so a
+  short put and a long stock position on the same name net together.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from datetime import date
+
+import pandas as pd
+from scipy.stats import norm
+
+from .marketdata import TickerStats
+from .parse import Position
+
+RISK_FREE_RATE = 0.04
+DEFAULT_IV = 0.35
+IV_SANITY = (0.01, 5.0)
+
+CAP_BUCKETS = [
+    ("Mega (>$25B)", 25e9, math.inf),
+    ("Large ($5-25B)", 5e9, 25e9),
+    ("Medium ($1-5B)", 1e9, 5e9),
+    ("Small ($250M-1B)", 250e6, 1e9),
+    ("Micro (<$250M)", 0, 250e6),
+]
+
+NORTH_AMERICA = {"United States", "Canada", "Mexico"}
+EUROPE = {
+    "United Kingdom", "Germany", "France", "Switzerland", "Netherlands",
+    "Ireland", "Spain", "Italy", "Sweden", "Denmark", "Norway", "Finland",
+    "Belgium", "Austria", "Portugal", "Luxembourg", "Greece", "Poland",
+    "Jersey", "Guernsey", "Isle of Man", "Monaco", "Liechtenstein",
+}
+
+
+def bs_price_delta(
+    spot: float, strike: float, t_years: float, iv: float, cp: str,
+    rate: float = RISK_FREE_RATE,
+) -> tuple[float, float]:
+    """Black-Scholes European price and delta (q=0)."""
+    if t_years <= 0:
+        intrinsic = max(spot - strike, 0.0) if cp == "C" else max(strike - spot, 0.0)
+        if cp == "C":
+            delta = 1.0 if spot > strike else 0.0
+        else:
+            delta = -1.0 if spot < strike else 0.0
+        return intrinsic, delta
+    sq = iv * math.sqrt(t_years)
+    d1 = (math.log(spot / strike) + (rate + 0.5 * iv * iv) * t_years) / sq
+    d2 = d1 - sq
+    if cp == "C":
+        price = spot * norm.cdf(d1) - strike * math.exp(-rate * t_years) * norm.cdf(d2)
+        delta = norm.cdf(d1)
+    else:
+        price = strike * math.exp(-rate * t_years) * norm.cdf(-d2) - spot * norm.cdf(-d1)
+        delta = norm.cdf(d1) - 1.0
+    return price, delta
+
+
+@dataclass
+class PortfolioAnalytics:
+    asof: date
+    positions: pd.DataFrame  # one row per priced position
+    issuers: pd.DataFrame  # aggregated per underlying
+    summary: dict = field(default_factory=dict)
+    sector_table: pd.DataFrame | None = None
+    cap_table: pd.DataFrame | None = None
+    region_table: pd.DataFrame | None = None
+    issues: list[str] = field(default_factory=list)
+
+
+def _cap_bucket(market_cap) -> str:
+    if market_cap is None or not math.isfinite(float(market_cap or math.nan)):
+        return "Unknown"
+    mc = float(market_cap)
+    for label, lo, hi in CAP_BUCKETS:
+        if lo <= mc < hi:
+            return label
+    return "Unknown"
+
+
+def _region(country: str | None, quote_type: str | None) -> str:
+    if quote_type == "ETF":
+        return "ETF/Index"
+    if not country:
+        return "Unknown"
+    if country in NORTH_AMERICA:
+        return "North America"
+    if country in EUROPE:
+        return "Europe"
+    return "Other"
+
+
+def _sector(profile: dict) -> str:
+    if profile.get("quote_type") == "ETF":
+        return "ETF/Index"
+    return profile.get("sector") or "Unknown"
+
+
+def build_analytics(
+    positions: list[Position],
+    stats: dict[str, TickerStats],
+    profiles: dict[str, dict],
+    option_quotes: dict[str, dict],
+    asof: date,
+    aum: float | None = None,
+    issues: list[str] | None = None,
+) -> PortfolioAnalytics:
+    issues = list(issues or [])
+    rows = []
+    unpriced: list[str] = []
+    iv_fallbacks = 0
+    theo_priced = 0
+
+    for p in positions:
+        st = stats.get(p.underlying)
+        if st is None:
+            unpriced.append(p.raw_symbol)
+            continue
+        profile = profiles.get(p.underlying, {})
+        beta = st.beta
+
+        if p.kind == "equity":
+            mv = p.qty * st.spot
+            exposure = mv
+            delta = 1.0
+            price_src = "close"
+            iv_used = None
+            delta_shares = p.qty
+        else:
+            t_years = (p.expiry - asof).days / 365.0
+            quote = option_quotes.get(p.contract_key, {})
+            iv = quote.get("iv")
+            if iv is None or not (IV_SANITY[0] <= iv <= IV_SANITY[1]):
+                iv = st.realized_vol if st.realized_vol else DEFAULT_IV
+                iv_fallbacks += 1
+            theo, delta = bs_price_delta(st.spot, p.strike, t_years, iv, p.cp)
+
+            bid, ask = quote.get("bid"), quote.get("ask")
+            if bid is not None and ask is not None and ask > 0 and ask >= bid:
+                premium = (bid + ask) / 2
+                price_src = "chain_mid"
+            elif quote.get("last"):
+                premium = quote["last"]
+                price_src = "chain_last"
+            else:
+                premium = theo
+                price_src = "bs_theoretical"
+                theo_priced += 1
+
+            mv = p.qty * p.multiplier * premium
+            exposure = p.qty * p.multiplier * delta * st.spot
+            iv_used = iv
+            delta_shares = p.qty * p.multiplier * delta
+
+        rows.append(
+            {
+                "account": p.account,
+                "symbol": p.raw_symbol,
+                "underlying": p.underlying,
+                "kind": p.kind,
+                "qty": p.qty,
+                "spot": st.spot,
+                "expiry": p.expiry,
+                "strike": p.strike,
+                "cp": p.cp,
+                "adjusted": p.adjusted,
+                "iv": iv_used,
+                "delta": delta,
+                "price_source": price_src,
+                "mv": mv,
+                "exposure": exposure,
+                "delta_shares": delta_shares,
+                "adv_shares": st.adv_shares,
+                "spot_date": st.spot_date,
+                "beta": beta,
+                "beta_exposure": exposure * beta if beta is not None else None,
+                "name": profile.get("name") or p.underlying,
+                "sector": _sector(profile),
+                "cap_bucket": _cap_bucket(profile.get("market_cap")),
+                "region": _region(profile.get("country"), profile.get("quote_type")),
+                "short_pct_float": profile.get("short_pct_float"),
+                "short_ratio": profile.get("short_ratio"),
+                "shares_short": profile.get("shares_short"),
+                "shares_short_prior": profile.get("shares_short_prior"),
+                "held_pct_inst": profile.get("held_pct_inst"),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        raise ValueError("No positions could be priced — cannot build a report.")
+
+    if unpriced:
+        issues.append(
+            f"{len(unpriced)} position(s) had no price data and were excluded: "
+            + ", ".join(unpriced[:8])
+            + ("…" if len(unpriced) > 8 else "")
+        )
+    post_asof = df.loc[
+        df["spot_date"].notna() & (df["spot_date"] > asof), "underlying"
+    ].unique()
+    if len(post_asof):
+        issues.append(
+            "New listings priced with their first post-as-of close (no "
+            f"market close existed on {asof}): " + ", ".join(sorted(post_asof))
+        )
+    if iv_fallbacks:
+        issues.append(
+            f"{iv_fallbacks} option(s) used realized-vol fallback for delta "
+            "(no usable chain IV)."
+        )
+    if theo_priced:
+        issues.append(
+            f"{theo_priced} option(s) priced with Black-Scholes theoretical "
+            "value (no usable chain quote)."
+        )
+    n_adj = int(df["adjusted"].sum())
+    if n_adj:
+        issues.append(
+            f"{n_adj} adjusted option contract(s) treated as standard terms; "
+            "their non-standard deliverables make both delta and premium "
+            "approximate, not just the multiplier."
+        )
+    run_date = date.today()
+    if run_date != asof and len(df.loc[df["kind"] == "option"]):
+        issues.append(
+            f"Option quotes (bid/ask/IV) are live as of {run_date}; equity "
+            f"spots and deltas use {asof} closes — a market move between the "
+            "two dates makes the option book's MV inconsistent with the "
+            "equity book."
+        )
+
+    # ------------------------------------------------------------------
+    # Issuer-level aggregation (delta-adjusted)
+    # ------------------------------------------------------------------
+    issuers = (
+        df.groupby("underlying")
+        .agg(
+            name=("name", "first"),
+            sector=("sector", "first"),
+            cap_bucket=("cap_bucket", "first"),
+            region=("region", "first"),
+            beta=("beta", "first"),
+            exposure=("exposure", "sum"),
+            mv=("mv", "sum"),
+            net_shares=("delta_shares", "sum"),
+            adv_shares=("adv_shares", "first"),
+            n_positions=("symbol", "count"),
+        )
+        .reset_index()
+    )
+    issuers["beta_exposure"] = issuers["exposure"] * issuers["beta"]
+    issuers["pct_adv"] = (
+        issuers["net_shares"].abs() / issuers["adv_shares"]
+    ).where(issuers["adv_shares"] > 0)
+    # days to liquidate the net delta-equivalent position at 20% of ADV
+    issuers["days_to_liq"] = issuers["pct_adv"] / 0.20
+
+    # ------------------------------------------------------------------
+    # Summary block
+    # ------------------------------------------------------------------
+    mv_long = float(df.loc[df["mv"] > 0, "mv"].sum())
+    mv_short = float(df.loc[df["mv"] < 0, "mv"].sum())
+    exp_long = float(df.loc[df["exposure"] > 0, "exposure"].sum())
+    exp_short = float(df.loc[df["exposure"] < 0, "exposure"].sum())
+    iss_long = issuers.loc[issuers["exposure"] > 0]
+    iss_short = issuers.loc[issuers["exposure"] < 0]
+
+    opts = df.loc[df["kind"] == "option"]
+    eq = df.loc[df["kind"] == "equity"]
+
+    beta_known = df.dropna(subset=["beta_exposure"])
+    beta_net = float(beta_known["beta_exposure"].sum())
+    beta_coverage = (
+        float(beta_known["exposure"].abs().sum() / df["exposure"].abs().sum())
+        if float(df["exposure"].abs().sum()) > 0
+        else 0.0
+    )
+    if beta_coverage < 0.9:
+        issues.append(
+            f"Betas available for only {beta_coverage:.0%} of gross exposure "
+            "— beta-adjusted net is understated."
+        )
+
+    summary = {
+        "aum": aum,
+        "mv_long": mv_long,
+        "mv_short": mv_short,
+        "mv_gross": mv_long - mv_short,
+        "mv_net": mv_long + mv_short,
+        "exp_long": exp_long,
+        "exp_short": exp_short,
+        "exp_gross": exp_long - exp_short,
+        "exp_net": exp_long + exp_short,
+        "beta_net": beta_net,
+        "beta_coverage": beta_coverage,
+        "n_instruments": int(len(df)),
+        "n_options": int(len(opts)),
+        "n_equities": int(len(eq)),
+        "n_issuers": int(issuers["underlying"].nunique()),
+        "n_issuers_long": int(len(iss_long)),
+        "n_issuers_short": int(len(iss_short)),
+        # issuer-level (netted) side totals — denominators for top-issuer %s
+        "iss_exp_long": float(iss_long["exposure"].sum()),
+        "iss_exp_short": float(iss_short["exposure"].sum()),
+        "opt_mv_gross": float(opts["mv"].abs().sum()),
+        "opt_mv_net": float(opts["mv"].sum()),
+        "opt_exp_gross": float(opts["exposure"].abs().sum()),
+        "opt_exp_net": float(opts["exposure"].sum()),
+        "eq_exp_gross": float(eq["exposure"].abs().sum()),
+        "eq_exp_net": float(eq["exposure"].sum()),
+    }
+
+    # ------------------------------------------------------------------
+    # Liquidity (issuer-level, net delta-equivalent shares vs 60d ADV)
+    # ------------------------------------------------------------------
+    liq = issuers.dropna(subset=["pct_adv"]).copy()
+    total_gross = float(issuers["exposure"].abs().sum()) or 1.0
+    liq_gross = float(liq["exposure"].abs().sum())
+    liq_cov = liq_gross / total_gross
+
+    # bucket shares are % of TOTAL gross (uncovered names contribute 0 to the
+    # numerator), so the "% gross" label is honest; coverage is reported
+    # separately so a low-coverage book is not read as low-liquidity-risk
+    def bucket_share(threshold: float) -> float:
+        heavy = liq.loc[liq["pct_adv"] > threshold, "exposure"].abs().sum()
+        return float(heavy) / total_gross
+
+    sorted_liq = liq.sort_values("days_to_liq")
+    cum_w = sorted_liq["exposure"].abs().cumsum() / (liq_gross or 1.0)
+
+    def weighted_pctile(q: float) -> float | None:
+        hit = sorted_liq.loc[cum_w >= q, "days_to_liq"]
+        return float(hit.iloc[0]) if len(hit) else None
+
+    summary["liquidity"] = {
+        "adv_coverage": liq_cov,
+        "pct_gross_over_25adv": bucket_share(0.25),
+        "pct_gross_over_50adv": bucket_share(0.50),
+        "pct_gross_over_100adv": bucket_share(1.00),
+        "days_to_liq_p50": weighted_pctile(0.50),
+        "days_to_liq_p95": weighted_pctile(0.95),
+    }
+
+    # ------------------------------------------------------------------
+    # Category tables (issuer-level, delta-adjusted)
+    # ------------------------------------------------------------------
+    def category_table(col: str, order: list[str] | None = None) -> pd.DataFrame:
+        g = issuers.groupby(col).agg(
+            long=("exposure", lambda s: s[s > 0].sum()),
+            short=("exposure", lambda s: s[s < 0].sum()),
+            net=("exposure", "sum"),
+            gross=("exposure", lambda s: s.abs().sum()),
+            n_issuers=("underlying", "count"),
+        )
+        gross_total = float(g["gross"].sum())
+        g["pct_gross"] = g["gross"] / gross_total if gross_total else 0.0
+        g = g.sort_values("gross", ascending=False)
+        if order:
+            present = [x for x in order if x in g.index]
+            rest = [x for x in g.index if x not in order]
+            g = g.reindex(present + rest)
+        return g.reset_index()
+
+    cap_order = [label for label, _, _ in CAP_BUCKETS] + ["Unknown"]
+
+    return PortfolioAnalytics(
+        asof=asof,
+        positions=df,
+        issuers=issuers,
+        summary=summary,
+        sector_table=category_table("sector"),
+        cap_table=category_table("cap_bucket", order=cap_order),
+        region_table=category_table("region"),
+        issues=issues,
+    )

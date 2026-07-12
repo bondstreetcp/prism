@@ -1,0 +1,10 @@
+[server]
+headless = true
+# broker exports are small; 20 MB is plenty and avoids huge uploads
+maxUploadSize = 20
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"

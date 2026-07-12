@@ -1,0 +1,10 @@
+cache/
+reports/
+snapshots/
+__pycache__/
+*.pyc
+.git/
+.venv/
+venv/
+*.pdf
+ARS1 Risk Report 20180316.pdf

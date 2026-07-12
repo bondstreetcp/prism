@@ -1,0 +1,23 @@
+# Market-data cache and generated output (regenerated at runtime)
+cache/
+reports/
+snapshots/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Sensitive: real position exports and example broker files stay OUT of git.
+# Users upload their own CSV in the app at runtime — none of this is needed
+# in the repo, and committing real holdings (even to a private repo) is best
+# avoided.
+*.csv
+*.pdf
+
+# scratch / logs
+*.log
+*.parquet
+repro_*.py
+scratch_*

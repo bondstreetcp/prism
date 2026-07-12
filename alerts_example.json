@@ -1,0 +1,11 @@
+{
+  "max_net_pct_gross": 0.75,
+  "max_gross_usd": 40000000,
+  "max_issuer_pct_gross": 0.12,
+  "max_sector_pct_gross": 0.35,
+  "max_var95_pct_gross": 0.015,
+  "max_predicted_vol_pct_gross": 0.12,
+  "max_beta_adj_net_usd": 20000000,
+  "max_days_to_liq_p95": 5.0,
+  "max_crowded_short_pct_gross": 0.10
+}
