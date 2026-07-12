@@ -324,34 +324,40 @@ def render_tearsheet(
     y -= chart_h_pt + 18
 
     # ------------------------------------------- row 3: top issuer tables
+    aum = s.get("aum")  # net MV + cash, when known
+    pct_label = "% AUM" if aum else None
+
     def top_table(side: str) -> list[list[str]]:
         iss = a.issuers
-        # denominators are issuer-level side totals — same aggregation level
-        # as the netted issuer exposures in the rows
         if side == "long":
             sel = iss[iss["exposure"] > 0].nlargest(10, "exposure")
             total = s["iss_exp_long"]
-            head = ["Top long issuers", "Sector", "$M", "% Long"]
+            head = ["Top long issuers", "Tkr", "Sector", "$M",
+                    pct_label or "% Long"]
         else:
             sel = iss[iss["exposure"] < 0].nsmallest(10, "exposure")
             total = abs(s["iss_exp_short"])
-            head = ["Top short issuers", "Sector", "$M", "% Short"]
+            head = ["Top short issuers", "Tkr", "Sector", "$M",
+                    pct_label or "% Short"]
         rows = [head]
         for _, r in sel.iterrows():
-            nm = str(r["name"] or r["underlying"])[:26]
+            nm = str(r["name"] or r["underlying"])[:22]
+            # % of AUM when AUM is known (signed), else % of side (magnitude)
+            pct = (r["exposure"] / aum) if aum else (
+                abs(r["exposure"]) / total if total else 0)
             rows.append([
                 nm,
-                str(r["sector"])[:18],
+                str(r["underlying"])[:8],
+                str(r["sector"])[:16],
                 _m(r["exposure"]),
-                _pct(abs(r["exposure"]) / total if total else 0),
+                _pct(pct),
             ])
         return rows
 
     half = (CONTENT_W - 14) / 2
-    tl = _table(top_table("long"), [half * 0.42, half * 0.30, half * 0.14, half * 0.14],
-                align_left_cols=2)
-    tr = _table(top_table("short"), [half * 0.42, half * 0.30, half * 0.14, half * 0.14],
-                align_left_cols=2)
+    widths = [half * 0.34, half * 0.16, half * 0.24, half * 0.13, half * 0.13]
+    tl = _table(top_table("long"), widths, align_left_cols=3)
+    tr = _table(top_table("short"), widths, align_left_cols=3)
     hl = _draw_table(c, tl, MARGIN, y)
     hr = _draw_table(c, tr, MARGIN + half + 14, y)
     y -= max(hl, hr) + 14

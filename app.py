@@ -24,7 +24,10 @@ from riskreport.analytics import (
 )
 from riskreport.benchmark import BENCHMARK_CHOICES, active_risk
 from riskreport.macro import compute_macro
-from riskreport.narrative import build_facts, generate_narrative, is_available
+from riskreport.narrative import (
+    build_facts, build_reference, chat as ai_chat, generate_narrative,
+    is_available,
+)
 from riskreport.optimizer import OBJECTIVES, optimize_overlay
 from riskreport.pipeline import generate_report
 from riskreport.screener import build_screen_frame, screen
@@ -84,7 +87,10 @@ st.warning(
 with st.sidebar:
     st.header("Run")
     name = st.text_input("Portfolio name", value="")
-    aum_m = st.number_input("AUM ($M, optional)", min_value=0.0, value=0.0, step=1.0)
+    cash_m = st.number_input("Cash ($M)", value=0.0, step=1.0,
+                             help="AUM = net market value + cash; % columns are "
+                                  "% of AUM. IBKR files carry cash automatically; "
+                                  "for Goldman, enter it here (0 = none/unknown).")
     asof_override = st.date_input("As-of date (optional)", value=None)
     with_factors = st.toggle("Factor model, stress & VaR", value=True)
     with_hedge = st.toggle("Hedge suggestion", value=True, disabled=not with_factors)
@@ -114,7 +120,7 @@ def _do_run():
     try:
         res = generate_report(
             csv_path,
-            aum=(aum_m * 1e6) if aum_m else None,
+            cash=(cash_m * 1e6) if cash_m else None,
             name=name or None,
             asof=asof_override if isinstance(asof_override, date) else None,
             out_dir=OUT_DIR, cache_dir=CACHE_DIR, alerts_path=alerts_path,
@@ -174,13 +180,20 @@ def render_report(res):
             st.dataframe(show, hide_index=True, width="stretch")
 
     st.subheader("Top issuers")
+    aum = res.summary.get("aum")
+    pct_col = "% AUM" if aum else "% side"
     lc, sc = st.columns(2)
     for side, c in (("long", lc), ("short", sc)):
         sel, total = basis_top_issuers(iss, col, side, n=10)
-        rows = [{"Issuer": str(r["name"] or r["underlying"])[:30],
-                 "Sector": str(r["sector"])[:20], "$": _m(r[col]),
-                 "% side": f"{abs(r[col])/total:.1%}" if total else "—"}
-                for _, r in sel.iterrows()]
+        rows = []
+        for _, r in sel.iterrows():
+            pct = (r[col] / aum) if aum else (abs(r[col]) / total if total else 0)
+            rows.append({
+                "Ticker": r["underlying"],
+                "Issuer": str(r["name"] or r["underlying"])[:26],
+                "Sector": str(r["sector"])[:18], "$": _m(r[col]),
+                pct_col: f"{pct:.1%}",
+            })
         with c:
             st.markdown(f"**Top {side}s**")
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
@@ -372,49 +385,78 @@ def render_screener(res):
                  min_r2=min_r2 or None, held=held, sort_by=sort_by,
                  ascending=False, limit=40)
     disp = out[["ticker", "name", "sector", "beta", "r2", "held"] + fnames].copy()
-    disp["beta"] = disp["beta"].map(lambda v: f"{v:.2f}" if v is not None else "—")
-    disp["r2"] = disp["r2"].map(lambda v: f"{v:.2f}" if v is not None else "—")
+    # pd.notna (not `is not None`): a mixed None/float column coerces to float64,
+    # turning None into NaN, which `is not None` would wrongly render as "nan".
+    disp["beta"] = disp["beta"].map(lambda v: f"{v:.2f}" if pd.notna(v) else "—")
+    disp["r2"] = disp["r2"].map(lambda v: f"{v:.2f}" if pd.notna(v) else "—")
     for f in fnames:
         disp[f] = disp[f].map(lambda v: f"{v:+.2f}")
     st.dataframe(disp, hide_index=True, width="stretch")
 
 
-def render_narrative(res):
-    st.caption("An AI risk analyst reads the computed report and writes a "
-               "plain-English commentary. Uses Claude (Anthropic); needs an API "
-               "key. Not investment advice.")
-    key = os.environ.get("ANTHROPIC_API_KEY")
+def _llm_key():
+    key = os.environ.get("LLM_API_KEY") or os.environ.get("ZHIPUAI_API_KEY") \
+        or os.environ.get("OPENAI_API_KEY")
     if not key:
         try:
-            key = st.secrets.get("ANTHROPIC_API_KEY")
+            key = st.secrets.get("LLM_API_KEY")
         except Exception:
             key = None
-    if not key:
-        key = st.text_input("Anthropic API key (used only for this session)",
-                            type="password") or None
+    return key
+
+
+def render_ai(res):
+    st.caption("An AI risk analyst reads the computed report — ask it questions "
+               "or generate a commentary. Uses GLM (Zhipu / z.ai) by default. "
+               "Describes risk, not investment advice.")
+    key = _llm_key()
+    model = os.environ.get("LLM_MODEL", "glm-4.6")
+    with st.expander("LLM settings", expanded=not key):
+        if not key:
+            key = st.text_input("API key (LLM_API_KEY — used only this session)",
+                                type="password") or None
+        model = st.text_input("Model", value=model,
+                              help="e.g. glm-4.6 or glm-5.2, per your z.ai account")
     if not is_available(key):
-        st.info("Set an `ANTHROPIC_API_KEY` (env var, secret, or above) to "
-                "enable the narrative. A single commentary costs ~$0.02–0.03.")
+        st.info("Set an `LLM_API_KEY` (env var, secret, or above) to enable the "
+                "AI features. Configure `LLM_MODEL` / `LLM_BASE_URL` for your "
+                "provider (defaults to GLM on z.ai).")
         return
-    include_macro = st.checkbox("Include macro betas in the brief", value=False)
-    if not st.button("Generate commentary", type="primary"):
-        return
-    mac = None
-    if include_macro and res.factor_risk is not None and res.closes is not None:
-        try:
-            mac = compute_macro(res.analytics.positions, res.closes, res.asof)
-        except Exception:
-            mac = None
-    facts = build_facts(res, macro=mac)
-    with st.spinner("Writing risk commentary…"):
-        try:
-            text = generate_narrative(facts, api_key=key)
-        except Exception as exc:
-            st.error(f"Narrative generation failed: {exc}")
-            return
-    st.markdown(text)
-    st.caption("Generated by Claude from the report's computed metrics. "
-               "Review before relying on it.")
+
+    facts = build_facts(res)
+    reference = build_reference(res.model)
+
+    # one-shot commentary
+    if st.button("Generate risk commentary", type="primary"):
+        with st.spinner("Writing…"):
+            try:
+                text = generate_narrative(facts, api_key=key, model=model)
+                st.session_state["ai_summary"] = text
+            except Exception as exc:
+                st.error(f"Failed: {exc}")
+    if st.session_state.get("ai_summary"):
+        st.markdown(st.session_state["ai_summary"])
+
+    st.divider()
+    st.markdown("**Ask about the book** — e.g. *how would I lower the net short "
+                "momentum exposure?*")
+    hist = st.session_state.setdefault("ai_chat", [])
+    for m in hist:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+    q = st.chat_input("Ask a risk question…")
+    if q:
+        hist.append({"role": "user", "content": q})
+        with st.chat_message("user"):
+            st.markdown(q)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                try:
+                    ans = ai_chat(hist, facts, reference, api_key=key, model=model)
+                except Exception as exc:
+                    ans = f"⚠ {exc}"
+            st.markdown(ans)
+        hist.append({"role": "assistant", "content": ans})
 
 
 # =====================================================================
@@ -425,7 +467,7 @@ if result is None:
 (tab_report, tab_trends, tab_bench, tab_opt, tab_macro, tab_screen,
  tab_narr) = st.tabs(
     ["📄 Report", "📈 Trends", "🎯 Benchmark", "🛠 Optimizer", "📉 Macro",
-     "🔎 Screener", "🤖 Narrative"])
+     "🔎 Screener", "🤖 AI"])
 with tab_report:
     render_report(result)
 with tab_trends:
@@ -439,4 +481,4 @@ with tab_macro:
 with tab_screen:
     render_screener(result)
 with tab_narr:
-    render_narrative(result)
+    render_ai(result)

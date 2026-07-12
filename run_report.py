@@ -18,7 +18,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("csv_path", help="Broker position export CSV")
     ap.add_argument("--aum", type=float, default=None,
-                    help="Fund AUM in dollars (enables %% AUM columns)")
+                    help="Fund AUM in dollars (overrides net-MV + cash)")
+    ap.add_argument("--cash", type=float, default=None,
+                    help="Cash in dollars; AUM = net MV + cash "
+                         "(Goldman has no cash line; IBKR files carry it)")
     ap.add_argument("--name", default=None,
                     help="Portfolio display name (default: account number)")
     ap.add_argument("--asof", default=None,
@@ -36,6 +39,7 @@ def main() -> int:
     result = generate_report(
         args.csv_path,
         aum=args.aum,
+        cash=args.cash,
         name=args.name,
         asof=date.fromisoformat(args.asof) if args.asof else None,
         out_dir=args.out,

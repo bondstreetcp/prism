@@ -16,7 +16,7 @@ from typing import Callable
 
 from .analytics import build_analytics
 from .marketdata import MarketData
-from .parse import parse_positions_csv
+from .parse import parse_positions
 from .snapshot import save_snapshot
 from .tearsheet import render_tearsheet
 
@@ -49,6 +49,7 @@ def generate_report(
     csv_path: str | Path,
     *,
     aum: float | None = None,
+    cash: float | None = None,
     name: str | None = None,
     asof: date | None = None,
     out_dir: str | Path = "reports",
@@ -61,12 +62,25 @@ def generate_report(
     log = progress or (lambda _msg: None)
     t0 = time.time()
 
-    parsed = parse_positions_csv(csv_path)
+    parsed = parse_positions(csv_path)
     asof = asof or parsed.asof or date.today()
+    # AUM/cash priority: explicit --aum > explicit --cash (net MV + cash) >
+    # broker-reported NAV (IBKR) > broker file cash (net MV + file cash).
+    user_cash = cash
+    if aum is not None:
+        cash = user_cash if user_cash is not None else parsed.cash
+    elif user_cash is not None:
+        cash = user_cash                       # build_analytics derives MV+cash
+    elif parsed.nav is not None:
+        aum = parsed.nav                       # trust the broker's own NAV
+        cash = parsed.cash
+    else:
+        cash = parsed.cash
     n_opt = sum(1 for p in parsed.positions if p.kind == "option")
-    log(f"Parsed {len(parsed.positions)} positions "
+    log(f"Parsed {len(parsed.positions)} {parsed.source.upper()} positions "
         f"({len(parsed.positions) - n_opt} equity, {n_opt} option) as of {asof}; "
-        f"{len(parsed.issues)} parse issue(s).")
+        f"{len(parsed.issues)} parse issue(s)."
+        + (f" Cash ${cash/1e6:,.1f}M." if cash is not None else ""))
 
     md = MarketData(cache_dir)
     tickers = sorted({p.underlying for p in parsed.positions})
@@ -101,7 +115,7 @@ def generate_report(
 
     analytics = build_analytics(
         parsed.positions, stats, profiles, quotes,
-        asof=asof, aum=aum, issues=parsed.issues,
+        asof=asof, aum=aum, cash=cash, issues=parsed.issues,
     )
 
     factor_risk = scenarios = model = bias = None

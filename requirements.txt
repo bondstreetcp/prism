@@ -13,5 +13,6 @@ pyarrow>=14,<24
 requests>=2.31
 # yfinance's data API shifts between versions; keep it close to the tested one.
 yfinance>=1.2,<2
-# AI risk narrative (optional feature; needs ANTHROPIC_API_KEY at runtime)
-anthropic>=0.40
+# AI risk narrative & chat (optional; OpenAI-compatible client for GLM/z.ai,
+# needs an LLM_API_KEY at runtime)
+openai>=1.40

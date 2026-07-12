@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .parse import Position, build_position, parse_positions_csv
+from .parse import Position, build_position, parse_positions
 
 
 @dataclass
@@ -107,7 +107,7 @@ def load_proposed_book(
     Exactly one of trades_csv / proposed_csv must be given. When a full
     proposed export is given, the implied trade list is the position diff.
     """
-    parsed = parse_positions_csv(base_csv)
+    parsed = parse_positions(base_csv)
     issues = list(parsed.issues)
     base = parsed.positions
 
@@ -120,7 +120,7 @@ def load_proposed_book(
         proposed = apply_trades(base, tl.trades)
         return base, proposed, tl.trades, issues
 
-    parsed2 = parse_positions_csv(proposed_csv)
+    parsed2 = parse_positions(proposed_csv)
     issues += [f"(proposed) {i}" for i in parsed2.issues]
     proposed = parsed2.positions
     # implied trades = proposed minus base

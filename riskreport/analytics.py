@@ -192,6 +192,7 @@ def build_analytics(
     option_quotes: dict[str, dict],
     asof: date,
     aum: float | None = None,
+    cash: float | None = None,
     issues: list[str] | None = None,
 ) -> PortfolioAnalytics:
     issues = list(issues or [])
@@ -371,12 +372,20 @@ def build_analytics(
             "— beta-adjusted net is understated."
         )
 
+    # AUM = net market value of the book plus cash. Cash comes from the broker
+    # file (IBKR) or is supplied by the user (Goldman has no cash line). An
+    # explicit `aum` override wins; otherwise derive it when cash is known.
+    mv_net = mv_long + mv_short
+    if aum is None and cash is not None:
+        aum = mv_net + cash
+
     summary = {
         "aum": aum,
+        "cash": cash,
         "mv_long": mv_long,
         "mv_short": mv_short,
         "mv_gross": mv_long - mv_short,
-        "mv_net": mv_long + mv_short,
+        "mv_net": mv_net,
         "exp_long": exp_long,
         "exp_short": exp_short,
         "exp_gross": exp_long - exp_short,

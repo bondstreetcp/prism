@@ -3,6 +3,19 @@
 Generates a one-page PDF risk tearsheet (Omega Point-style) from a broker
 "Intraday Position" CSV export, using free market data from Yahoo Finance.
 
+## Input files
+
+Two broker formats are auto-detected:
+
+* **Goldman "Intraday Position"** — account, symbol, quantities. Has no cash
+  line, so enter cash (`--cash`, or the app's Cash field) to get % of AUM.
+* **Interactive Brokers Activity Statement** — the multi-section CSV. Positions
+  come from the "Open Positions" section; **cash and total NAV are read from
+  the file**, so AUM is automatic.
+
+AUM = net market value + cash (IBKR: the broker's reported NAV). All `%` columns
+are % of AUM when it's known.
+
 ## Web app
 
 For a no-terminal, upload-a-CSV experience:
@@ -28,9 +41,11 @@ Opens in your browser with four tabs:
   controlled — "$ P&L per +1% move."
 * **Screener** — screen the fitted universe (your names + hedge/macro ETFs) by
   factor loading, beta, and model fit to find hedges or replacements.
-* **Narrative** — an AI risk analyst (Claude) reads the computed report and
-  writes a plain-English commentary. Needs `ANTHROPIC_API_KEY`; ~$0.02–0.03
-  per commentary. Optional — the rest of the tool works without it.
+* **AI** — an AI risk analyst reads the computed report: generate a
+  plain-English commentary or **chat** ("how would I lower the net short
+  momentum exposure?"). Uses GLM (Zhipu / z.ai) via its OpenAI-compatible API;
+  set `LLM_API_KEY` (and optionally `LLM_MODEL`, default `glm-4.6`, and
+  `LLM_BASE_URL`). Optional — the rest of the tool works without it.
 
 To host it privately for colleagues, see [DEPLOY.md](DEPLOY.md) (Render /
 Railway / Fly / a VPS behind Tailscale — a few dollars a month). Set an

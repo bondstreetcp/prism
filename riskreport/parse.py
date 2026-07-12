@@ -1,13 +1,16 @@
 """Parse broker position CSV exports into typed Position records.
 
-Handles the "Intraday Position" export format:
-  Account Number, Symbol, Beginning Position, Today Buy, Today Sell,
-  Non trade Activity In, Non trade Activity Out, Net Intraday Activity,
-  Current Position
+Two formats are supported and auto-detected:
 
-Equity symbols are plain tickers ("MDT"). Listed options are encoded as
-"ROOT   MON DD YYYY   STRIKE.000 C|P", e.g. "ALLE   SEP 18 2026   160.000 P".
-Adjusted option roots carry a trailing digit ("APTV1") from corporate actions.
+* Goldman "Intraday Position": Account Number, Symbol, ... Current Position.
+  Equity symbols are plain tickers ("MDT"); options are
+  "ROOT   MON DD YYYY   STRIKE.000 C|P" (e.g. "ALLE   SEP 18 2026   160.000 P").
+  Adjusted roots carry a trailing digit ("APTV1") from corporate actions.
+
+* Interactive Brokers Activity Statement: a multi-section CSV. Positions come
+  from the "Open Positions" section; options are "ROOT DDMMMYY STRIKE C|P"
+  (e.g. "AKAM 20NOV26 85 P"). Cash and total NAV come from the "Net Asset
+  Value" section, so an IBKR file carries its own AUM (no manual cash input).
 """
 
 from __future__ import annotations
@@ -62,6 +65,9 @@ class ParseResult:
     issues: list[str] = field(default_factory=list)
     accounts: list[str] = field(default_factory=list)
     asof: date | None = None
+    cash: float | None = None   # from the broker file (IBKR); None if absent
+    nav: float | None = None    # broker-reported total NAV, if available
+    source: str = "goldman"     # "goldman" | "ibkr"
 
 
 # Brokers print class shares without a separator; Yahoo wants a dash.
@@ -182,4 +188,151 @@ def parse_positions_csv(path: str | Path) -> ParseResult:
             result.positions.append(pos)
 
     result.accounts = sorted(accounts)
+    result.source = "goldman"
     return result
+
+
+# ----------------------------------------------------------------------
+# Interactive Brokers Activity Statement
+# ----------------------------------------------------------------------
+_IBKR_OPT_RE = re.compile(
+    r"^(?P<root>\S+)\s+"
+    r"(?P<day>\d{1,2})(?P<mon>JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
+    r"(?P<year>\d{2})\s+"
+    r"(?P<strike>\d+(?:\.\d+)?)\s+(?P<cp>[CP])$"
+)
+
+
+def _build_ibkr_option(account: str, raw: str, qty: float, multiplier: int):
+    """Build an option Position from an IBKR symbol 'ROOT DDMMMYY STRIKE C|P'."""
+    m = _IBKR_OPT_RE.match(re.sub(r"\s+", " ", raw.strip()))
+    if not m:
+        return None, f"unrecognized IBKR option symbol {raw!r}"
+    try:
+        expiry = date(2000 + int(m["year"]), MONTHS[m["mon"]], int(m["day"]))
+    except ValueError:
+        return None, f"invalid expiry in IBKR option {raw!r}"
+    root = m["root"]
+    base, adjusted = _strip_adjustment(root)
+    return Position(
+        account=account, raw_symbol=raw.strip(), qty=qty, kind="option",
+        underlying=normalize_ticker(base), root=root, expiry=expiry,
+        strike=float(m["strike"]), cp=m["cp"], adjusted=adjusted,
+        multiplier=multiplier or 100,
+    ), None
+
+
+def _ibkr_sections(path: str | Path) -> list[list[str]]:
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return list(csv.reader(f))
+
+
+def is_ibkr(path: str | Path) -> bool:
+    """Sniff whether a CSV is an IBKR Activity Statement."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            head = f.read(4000)
+    except OSError:
+        return False
+    return ("Interactive Brokers" in head
+            or head.startswith("Statement,Header,Field Name")
+            or "\nOpen Positions,Header" in head
+            or "Open Positions,Header" in head[:2000])
+
+
+def parse_ibkr_csv(path: str | Path) -> ParseResult:
+    rows = _ibkr_sections(path)
+    result = ParseResult(source="ibkr", asof=asof_from_filename(path))
+    accounts: set[str] = set()
+
+    # ---- account, as-of date, cash, and NAV --------------------------
+    for r in rows:
+        if len(r) < 3:
+            continue
+        if r[0] == "Account Information" and r[1] == "Data" and r[2].strip() == "Account":
+            accounts.add(r[3].strip())
+        elif r[0] == "Statement" and r[1] == "Data" and r[2].strip() == "Period":
+            m = re.search(r"[A-Z][a-z]+ \d{1,2}, \d{4}", r[3])
+            if m:
+                try:
+                    result.asof = datetime.strptime(m.group(), "%B %d, %Y").date()
+                except ValueError:
+                    pass
+        elif r[0] == "Net Asset Value" and r[1] == "Data" and len(r) > 6:
+            label = r[2].strip()
+            try:
+                current_total = float(r[6])
+            except (ValueError, IndexError):
+                continue
+            if label == "Cash":
+                result.cash = current_total
+            elif label == "Total":
+                result.nav = current_total
+
+    # ---- open positions ---------------------------------------------
+    op_header = None
+    for r in rows:
+        if r and r[0] == "Open Positions" and len(r) > 1 and r[1] == "Header":
+            op_header = [c.strip() for c in r[2:]]
+            break
+    if op_header is None:
+        raise ValueError("IBKR file has no 'Open Positions' section.")
+    idx = {name: i for i, name in enumerate(op_header)}
+    need = {"Asset Category", "Symbol", "Quantity", "Mult"}
+    if not need <= set(idx):
+        raise ValueError(f"IBKR Open Positions missing columns: {need - set(idx)}")
+
+    acct = sorted(accounts)[0] if accounts else "IBKR"
+    for r in rows:
+        if not (r and r[0] == "Open Positions" and len(r) > 1 and r[1] == "Data"):
+            continue
+        cells = r[2:]
+        if len(cells) <= max(idx.values()):
+            continue
+        # only the per-instrument 'Summary' rows (skip lot/subtotal breakdowns)
+        if idx.get("DataDiscriminator") is not None and \
+                cells[idx["DataDiscriminator"]].strip() != "Summary":
+            continue
+        cat = cells[idx["Asset Category"]].strip()
+        symbol = cells[idx["Symbol"]].strip()
+        qty_text = cells[idx["Quantity"]].strip().replace(",", "")
+        mult_text = cells[idx["Mult"]].strip().replace(",", "")
+        if not symbol:
+            continue
+        try:
+            qty = float(qty_text)
+        except ValueError:
+            result.issues.append(f"IBKR: unreadable quantity {qty_text!r} for "
+                                 f"{symbol!r} — skipped")
+            continue
+        if qty == 0:
+            continue
+        try:
+            mult = int(float(mult_text)) if mult_text else 100
+        except ValueError:
+            mult = 100
+
+        if "Option" in cat:
+            pos, err = _build_ibkr_option(acct, symbol, qty, mult)
+            if err:
+                result.issues.append(f"IBKR: {err} — skipped")
+                continue
+            result.positions.append(pos)
+        elif cat in ("Stocks", "Equity", "ETFs", "Funds"):
+            result.positions.append(Position(
+                account=acct, raw_symbol=symbol, qty=qty, kind="equity",
+                underlying=normalize_ticker(symbol),
+            ))
+        else:
+            result.issues.append(f"IBKR: unsupported asset category {cat!r} "
+                                 f"for {symbol!r} — excluded")
+
+    result.accounts = sorted(accounts)
+    return result
+
+
+def parse_positions(path: str | Path) -> ParseResult:
+    """Auto-detect the broker format (Goldman vs IBKR) and parse."""
+    if is_ibkr(path):
+        return parse_ibkr_csv(path)
+    return parse_positions_csv(path)
