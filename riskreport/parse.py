@@ -370,6 +370,18 @@ def merge_parse_results(results: list[ParseResult]) -> ParseResult:
     merged.nav = sum(navs) if navs else None
     if navs and len(navs) < len(results):
         merged.nav = None  # incomplete NAV coverage — don't report a partial sum
+    if cashes and len(cashes) < len(results):
+        # Incomplete cash coverage: keep the reported cash (it is real and the
+        # best available), but any AUM derived from it (net MV + cash) rests on
+        # a PARTIAL cash figure, so it may be over- or under-stated. Surface it
+        # rather than let the distortion pass silently — symmetric with NAV.
+        n_missing = len(results) - len(cashes)
+        merged.issues.append(
+            f"{n_missing} of {len(results)} aggregated files report no cash "
+            "balance (e.g. Goldman exports carry none); consolidated AUM uses "
+            "only the reported cash and may be over- or under-stated. Enter "
+            "total cash (--cash / the app's Cash field) to correct it."
+        )
     asofs = [r.asof for r in results if r.asof]
     merged.asof = max(asofs) if asofs else None
     if len({r.asof for r in results if r.asof}) > 1:
