@@ -114,7 +114,7 @@ def run_scenarios(
     # bridge short price gaps (halts, missed prints) so the resume-day move
     # survives pct_change instead of being deleted along with the gap
     filled = closes.ffill(limit=5)
-    rets = filled.pct_change()
+    rets = filled.pct_change(fill_method=None)
     rets = rets.loc[rets.index <= pd.Timestamp(asof)].tail(VAR_WINDOW)
     tickers = [t for t in pos["underlying"].unique() if t in rets.columns]
     r = rets[tickers]

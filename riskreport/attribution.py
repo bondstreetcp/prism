@@ -116,7 +116,7 @@ def compute_attribution(
         )
 
     fac_end = factor_returns.index.max().date() if factor_returns is not None else None
-    spy_ret = closes["SPY"].pct_change() if "SPY" in closes.columns else None
+    spy_ret = closes["SPY"].pct_change(fill_method=None) if "SPY" in closes.columns else None
 
     # factor set is whatever the model was fit on (ordered, Mkt-RF included)
     fnames = list(model.factor_names) if model is not None else list(FACTORS)

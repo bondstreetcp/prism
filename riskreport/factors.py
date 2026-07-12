@@ -231,7 +231,7 @@ def fit_loadings(
         raise RuntimeError(f"Factor returns missing {missing} for the chosen set.")
     sectors = sectors or {}
 
-    rets = closes.pct_change()
+    rets = closes.pct_change(fill_method=None)
     rets = rets.loc[rets.index <= pd.Timestamp(asof)]
     joint = rets.index.intersection(factors.index)
     rets = rets.loc[joint]
@@ -428,7 +428,7 @@ def factor_bias_test(
     estimation methodology (EWMA + shrinkage + specific) is well-scaled
     out-of-sample; a model built the same way today is then trustworthy.
     """
-    rets = closes.pct_change()
+    rets = closes.pct_change(fill_method=None)
     idx = rets.index[rets.index <= pd.Timestamp(asof)]
     if len(idx) < window + MIN_OBS + 5:
         return None  # not enough pre-holdout history to fit an OOS model

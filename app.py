@@ -64,10 +64,16 @@ if not _check_password():
 # Main UI
 # ----------------------------------------------------------------------
 st.title("📊 Portfolio Risk Report")
+st.warning(
+    "**Not investment advice · Internal use only.** Figures are model estimates "
+    "built from free, best-effort market data (Yahoo Finance) that may be "
+    "delayed, incomplete, or wrong. Verify before acting.",
+    icon="⚠️",
+)
 st.caption(
     "Upload a broker position export (the 'Intraday Position' CSV — account, "
     "symbol, and quantities). The tool prices the book with free market data "
-    "and generates a two-page risk tearsheet. Not investment advice."
+    "and generates a two-page risk tearsheet."
 )
 
 with st.sidebar:
