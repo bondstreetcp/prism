@@ -94,9 +94,23 @@ Built as Streamlit tabs in `app.py`; on-screen, not PDF.
   buckets (Nano <$50M · Micro $50–200M · Small $200M–2B · Mid $2–10B ·
   Large $10–200B · Mega >$200B).
 
-Natural next builds: macro factor overlay (rates/inflation/oil/USD/credit
-via ETF proxies), factor screener over ETF/index universes, custom thematic
-tags, and an AI risk-narrative + MCP server (matches their AI-native pivot).
+## Tier 2c — macro, screener, AI (SHIPPED 2026-07-12)
+
+* ~~**Macro factor overlay**~~ (`riskreport/macro.py`): book P&L regressed on
+  macro-proxy ETF returns (IEF/LQD/HYG/TIP/USO/UUP/GLD), market-controlled →
+  incremental $ P&L per +1% move in rates/credit/inflation/oil/USD/gold, with
+  t-stats. Their Quant Insight lens, free-data version.
+* ~~**Factor screener**~~ (`riskreport/screener.py`): screen the fitted-loadings
+  universe (book names + hedge/macro ETFs) by factor loading, beta, R², sector,
+  held/not-held; find hedges or replacements with a target profile.
+* ~~**AI risk narrative**~~ (`riskreport/narrative.py`): the Anthropic SDK feeds
+  the report's computed metrics to Claude (default claude-opus-4-8) for a
+  plain-English risk commentary. Optional (`ANTHROPIC_API_KEY`), ~$0.02–0.03/call.
+  Matches their AI-native "AI Teammates" pivot.
+
+Natural next builds: an MCP server exposing the book to AI assistants (their
+other AI-native surface), custom thematic tags, multi-account aggregation,
+and forecasts/alpha into the optimizer.
 
 ## Tier 3 — requires licensed data; out of scope for a free-data clone
 

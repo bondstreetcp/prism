@@ -23,6 +23,14 @@ Opens in your browser with four tabs:
 * **Optimizer** — minimize total/factor risk or tracking error over a tradable
   ETF universe under a constraint library (turnover, per-name size, factor
   caps, market-neutral); returns a trade list and before/after.
+* **Macro** — the book's sensitivity to macro drivers (rates, IG/HY credit,
+  inflation breakevens, oil, USD, gold) via liquid ETF proxies, market-
+  controlled — "$ P&L per +1% move."
+* **Screener** — screen the fitted universe (your names + hedge/macro ETFs) by
+  factor loading, beta, and model fit to find hedges or replacements.
+* **Narrative** — an AI risk analyst (Claude) reads the computed report and
+  writes a plain-English commentary. Needs `ANTHROPIC_API_KEY`; ~$0.02–0.03
+  per commentary. Optional — the rest of the tool works without it.
 
 To host it privately for colleagues, see [DEPLOY.md](DEPLOY.md) (Render /
 Railway / Fly / a VPS behind Tailscale — a few dollars a month). Set an

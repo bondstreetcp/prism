@@ -23,8 +23,11 @@ from riskreport.analytics import (
     basis_top_issuers,
 )
 from riskreport.benchmark import BENCHMARK_CHOICES, active_risk
+from riskreport.macro import compute_macro
+from riskreport.narrative import build_facts, generate_narrative, is_available
 from riskreport.optimizer import OBJECTIVES, optimize_overlay
 from riskreport.pipeline import generate_report
+from riskreport.screener import build_screen_frame, screen
 from riskreport.trends import TREND_METRICS, load_trend_series
 
 st.set_page_config(page_title="Portfolio Risk", page_icon="📊", layout="wide")
@@ -315,13 +318,114 @@ def render_optimizer(res):
     st.bar_chart(ex, height=280)
 
 
+def render_macro(res):
+    if res.factor_risk is None or res.closes is None:
+        st.info("The macro overlay needs the factor model and price history — "
+                "re-run with the factor model enabled.")
+        return
+    try:
+        mac = compute_macro(res.analytics.positions, res.closes, res.asof)
+    except Exception as exc:
+        st.error(f"Macro regression failed: {exc}")
+        return
+    st.caption("Book P&L regressed on macro-proxy ETF returns, controlling for "
+               "the equity market — each beta is the incremental $ P&L per +1% "
+               f"move, holding the market fixed. {res.asof} · {mac.window}d · "
+               f"R²={mac.r2:.0%}.")
+    m1, m2 = st.columns(2)
+    m1.metric("Market beta ($ per +1% SPY)", _m(mac.market_beta))
+    m2.metric("Variance explained (mkt+macro)", f"{mac.r2:.0%}")
+    show = mac.betas.copy()
+    show["$ P&L per +1%"] = show["beta_per_1pct"].map(_m)
+    show["t-stat"] = show["t_stat"].map(lambda v: f"{v:+.1f}")
+    st.dataframe(show[["factor", "$ P&L per +1%", "t-stat"]]
+                 .rename(columns={"factor": "Macro factor"}),
+                 hide_index=True, width="stretch")
+    chart = mac.betas.set_index("factor")["beta_per_1pct"] / 1e6
+    st.markdown("**$M P&L per +1% move (net of market)**")
+    st.bar_chart(chart, horizontal=True, height=240)
+    st.caption("|t| ≳ 2 ≈ statistically meaningful. Macro factors use liquid "
+               "ETF proxies (IEF, LQD, HYG, TIP, USO, UUP, GLD).")
+
+
+def render_screener(res):
+    if res.model is None:
+        st.info("The screener needs the factor model — re-run with it enabled.")
+        return
+    frame = build_screen_frame(res.model, res.stats, res.profiles,
+                               res.analytics.positions)
+    fnames = res.model.factor_names
+    st.caption(f"Screening {len(frame)} fitted names (your book + hedge/macro "
+               "ETF candidates) by factor profile. Find hedges or replacements "
+               "with a target loading.")
+    c1, c2, c3 = st.columns(3)
+    sort_by = c1.selectbox("Sort by", fnames + ["beta", "r2"], index=0)
+    held = c2.selectbox("Holdings", ["all", "held", "not_held"])
+    min_r2 = c3.slider("Min R²", 0.0, 0.8, 0.0, 0.05)
+    with st.expander("Factor loading filters"):
+        ranges = {}
+        for f in fnames:
+            lo, hi = st.slider(f, -3.0, 3.0, (-3.0, 3.0), 0.1, key=f"scr_{f}")
+            if (lo, hi) != (-3.0, 3.0):
+                ranges[f] = (lo, hi)
+    out = screen(frame, res.model, factor_ranges=ranges or None,
+                 min_r2=min_r2 or None, held=held, sort_by=sort_by,
+                 ascending=False, limit=40)
+    disp = out[["ticker", "name", "sector", "beta", "r2", "held"] + fnames].copy()
+    disp["beta"] = disp["beta"].map(lambda v: f"{v:.2f}" if v is not None else "—")
+    disp["r2"] = disp["r2"].map(lambda v: f"{v:.2f}" if v is not None else "—")
+    for f in fnames:
+        disp[f] = disp[f].map(lambda v: f"{v:+.2f}")
+    st.dataframe(disp, hide_index=True, width="stretch")
+
+
+def render_narrative(res):
+    st.caption("An AI risk analyst reads the computed report and writes a "
+               "plain-English commentary. Uses Claude (Anthropic); needs an API "
+               "key. Not investment advice.")
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        try:
+            key = st.secrets.get("ANTHROPIC_API_KEY")
+        except Exception:
+            key = None
+    if not key:
+        key = st.text_input("Anthropic API key (used only for this session)",
+                            type="password") or None
+    if not is_available(key):
+        st.info("Set an `ANTHROPIC_API_KEY` (env var, secret, or above) to "
+                "enable the narrative. A single commentary costs ~$0.02–0.03.")
+        return
+    include_macro = st.checkbox("Include macro betas in the brief", value=False)
+    if not st.button("Generate commentary", type="primary"):
+        return
+    mac = None
+    if include_macro and res.factor_risk is not None and res.closes is not None:
+        try:
+            mac = compute_macro(res.analytics.positions, res.closes, res.asof)
+        except Exception:
+            mac = None
+    facts = build_facts(res, macro=mac)
+    with st.spinner("Writing risk commentary…"):
+        try:
+            text = generate_narrative(facts, api_key=key)
+        except Exception as exc:
+            st.error(f"Narrative generation failed: {exc}")
+            return
+    st.markdown(text)
+    st.caption("Generated by Claude from the report's computed metrics. "
+               "Review before relying on it.")
+
+
 # =====================================================================
 if result is None:
     st.info("Upload a position CSV in the sidebar and click **Generate report**.")
     st.stop()
 
-tab_report, tab_trends, tab_bench, tab_opt = st.tabs(
-    ["📄 Report", "📈 Trends", "🎯 Benchmark", "🛠 Optimizer"])
+(tab_report, tab_trends, tab_bench, tab_opt, tab_macro, tab_screen,
+ tab_narr) = st.tabs(
+    ["📄 Report", "📈 Trends", "🎯 Benchmark", "🛠 Optimizer", "📉 Macro",
+     "🔎 Screener", "🤖 Narrative"])
 with tab_report:
     render_report(result)
 with tab_trends:
@@ -330,3 +434,9 @@ with tab_bench:
     render_benchmark(result)
 with tab_opt:
     render_optimizer(result)
+with tab_macro:
+    render_macro(result)
+with tab_screen:
+    render_screener(result)
+with tab_narr:
+    render_narrative(result)

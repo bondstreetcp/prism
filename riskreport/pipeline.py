@@ -41,6 +41,8 @@ class ReportResult:
     crowding: object = None
     bias: object = None
     stats: dict = field(default_factory=dict)
+    closes: object = None      # price history (for macro overlay)
+    profiles: dict = field(default_factory=dict)  # for the screener
 
 
 def generate_report(
@@ -69,9 +71,16 @@ def generate_report(
     md = MarketData(cache_dir)
     tickers = sorted({p.underlying for p in parsed.positions})
     fetch_tickers = tickers
-    if not no_factors and not no_hedge:
-        from .hedge import HEDGE_MENU
-        fetch_tickers = sorted(set(tickers) | set(HEDGE_MENU))
+    if not no_factors:
+        # hedge-basket ETFs (for the hedge suggester + optimizer) and macro
+        # proxy ETFs (for the macro overlay) get loadings/returns too
+        extra = set()
+        if not no_hedge:
+            from .hedge import HEDGE_MENU
+            extra |= set(HEDGE_MENU)
+        from .macro import MACRO_ETFS
+        extra |= set(MACRO_ETFS)
+        fetch_tickers = sorted(set(tickers) | extra)
 
     log(f"Fetching price history for {len(fetch_tickers)} tickers…")
     closes, vols = md.fetch_history(fetch_tickers, asof)
@@ -216,5 +225,5 @@ def generate_report(
         elapsed_s=elapsed, headline=headline,
         analytics=analytics, factor_risk=factor_risk, model=model,
         scenarios=scenarios, hedge=hedge, crowding=crowding_obj, bias=bias,
-        stats=stats,
+        stats=stats, closes=closes, profiles=profiles,
     )
