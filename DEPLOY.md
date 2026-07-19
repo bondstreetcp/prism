@@ -23,8 +23,8 @@ you want to manage. Two things every choice needs:
    app shows a login gate whenever it is set.
 2. **A persistent disk** mounted at `/data` so the market-data cache and daily
    snapshots survive restarts. Without it every run starts cold (a few minutes)
-   and attribution history never accumulates. The Dockerfile points
-   `RISK_CACHE_DIR` / `RISK_OUT_DIR` at `/data`.
+   and Trends/attribution history never accumulates. The Dockerfile points
+   `RISK_CACHE_DIR` / `RISK_OUT_DIR` / `RISK_SNAP_DIR` at `/data`.
 
 ### Option A — Render or Railway (easiest turnkey, ~$5–10/mo)
 
@@ -64,7 +64,46 @@ devices on your Tailscale network.
 Free and one-click from a private GitHub repo, but the disk is **ephemeral**
 (cache/snapshots reset on every reboot → cold starts, no attribution history)
 and it is meant for lighter apps. Fine for occasional use; add `APP_PASSWORD`
-via the app's **Secrets** settings. For anything regular, prefer A–C.
+via the app's **Secrets** settings. For anything regular, prefer A–C or E.
+
+### Option E — Synology NAS (self-hosted, private, persistent) ⭐
+
+Best of both worlds if you already own a NAS: **your position files never leave
+your hardware**, and the `/data` volume lives on the NAS so cache + snapshots
+persist (Trends and attribution build up run over run). Uses `docker-compose.yml`.
+
+**Requirements.** An **x86-64** Synology (Intel/AMD — the `+`, `play`, `xs`,
+and most `value` models: DS220+, DS224+, DS423+, DS920+, DS923+, DS1522+, etc.)
+running **Container Manager** (DSM 7.2+; older DSM calls it "Docker"). ARM models
+(`j`/`se`, e.g. DS120j, DS223) **can't** run this — check yours under Package
+Center. 4 GB+ RAM recommended (the factor fit on the ~1,000-line book is
+CPU/RAM-heavy; first run is slow on a NAS CPU, then cached).
+
+**Steps.**
+1. Install **Container Manager** from Package Center.
+2. Copy this repo folder to a shared folder on the NAS, e.g.
+   `/volume1/docker/portfolio-risk` (File Station, or `git clone` over SSH).
+   It gitignores your CSVs/PDFs, so copy your position files in separately or
+   just upload them through the web UI.
+3. Edit `docker-compose.yml` → set `APP_PASSWORD` to a real password (and
+   `LLM_API_KEY` if you want the AI tab).
+4. Container Manager → **Project** → **Create** → Path = that folder → it reads
+   `docker-compose.yml`, **builds** the image, and starts it. (First build pulls
+   Python + wheels — a few minutes.)
+5. Open **`http://<NAS-LAN-IP>:8501`**, log in, upload your CSV(s), Generate.
+   That's the "upload a file → get an updated page back" flow — now on your NAS.
+
+**Reaching it from outside the house — pick one:**
+- **Most private (recommended for holdings): keep it LAN-only + VPN.** Don't
+  expose port 8501. Install the **Tailscale** package (or Synology **VPN
+  Server**) on the NAS; connect your phone/laptop to it and use the LAN URL from
+  anywhere. Nothing is on the public internet.
+- **Convenience: Synology reverse proxy + HTTPS.** Control Panel → Login Portal
+  → Advanced → **Reverse Proxy** → route `https://risk.<you>.synology.me` (set up
+  a DDNS hostname + Let's Encrypt cert under Security → Certificate) to
+  `localhost:8501`. Then it's a normal HTTPS URL. Keep `APP_PASSWORD` on, and
+  ideally restrict source IPs / enable the firewall + 2-step login. Note the
+  Yahoo-data ToS caveat below applies once it's publicly reachable.
 
 ## Important caveats (read before sharing a URL)
 

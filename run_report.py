@@ -22,8 +22,9 @@ def main() -> int:
     ap.add_argument("--aum", type=float, default=None,
                     help="Fund AUM in dollars (overrides net-MV + cash)")
     ap.add_argument("--cash", type=float, default=None,
-                    help="Cash in dollars; AUM = net MV + cash "
-                         "(Goldman has no cash line; IBKR files carry it)")
+                    help="Additional cash in dollars for accounts whose files "
+                         "omit it (e.g. Goldman); ADDS to broker-reported cash "
+                         "(IBKR files carry theirs). AUM = net MV + total cash")
     ap.add_argument("--name", default=None,
                     help="Portfolio display name (default: account number)")
     ap.add_argument("--asof", default=None,

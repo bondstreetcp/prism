@@ -54,6 +54,7 @@ def generate_report(
     asof: date | None = None,
     out_dir: str | Path = "reports",
     cache_dir: str | Path = "cache",
+    snap_dir: str | Path = "snapshots",
     alerts_path: str | Path | None = None,
     no_factors: bool = False,
     no_hedge: bool = False,
@@ -69,16 +70,25 @@ def generate_report(
     asof = asof or parsed.asof or date.today()
     # AUM/cash priority: explicit --aum > explicit --cash (net MV + cash) >
     # broker-reported NAV (IBKR) > broker file cash (net MV + file cash).
-    user_cash = cash
+    # `cash` (from --cash / the app's Cash field) is ADDITIONAL cash for
+    # accounts whose files omit it (e.g. Goldman) — it ADDS to any cash the
+    # broker files already report (e.g. IBKR), it does not replace it. So the
+    # total cash of a consolidated book = file-reported cash + this input.
+    user_add = cash
+    file_cash = parsed.cash
+    total_cash = None
+    if file_cash is not None or user_add:
+        total_cash = (file_cash or 0.0) + (user_add or 0.0)
+
     if aum is not None:
-        cash = user_cash if user_cash is not None else parsed.cash
-    elif user_cash is not None:
-        cash = user_cash                       # build_analytics derives MV+cash
+        cash = total_cash                      # explicit AUM wins; keep cash for display
+    elif user_add:
+        cash = total_cash                      # build_analytics derives MV + total cash
     elif parsed.nav is not None:
-        aum = parsed.nav                       # trust the broker's own NAV
-        cash = parsed.cash
+        aum = parsed.nav                       # single broker book: trust its own NAV
+        cash = file_cash
     else:
-        cash = parsed.cash
+        cash = total_cash                      # net MV + file-reported cash (may be None)
     n_opt = sum(1 for p in parsed.positions if p.kind == "option")
     log(f"Parsed {len(parsed.positions)} {parsed.source.upper()} positions "
         f"({len(parsed.positions) - n_opt} equity, {n_opt} option) as of {asof}; "
@@ -209,8 +219,8 @@ def generate_report(
     except Exception as exc:
         log(f"  alerts unavailable: {exc}")
 
-    snap_dir = save_snapshot(analytics)
-    log(f"Snapshot archived to {snap_dir}")
+    snap_written = save_snapshot(analytics, base_dir=snap_dir)
+    log(f"Snapshot archived to {snap_written}")
 
     name = name or ", ".join(parsed.accounts) or "Portfolio"
     out_dir = Path(out_dir)

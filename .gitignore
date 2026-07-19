@@ -2,6 +2,7 @@
 cache/
 reports/
 snapshots/
+data/          # docker-compose persistent volume (cache + snapshots + reports)
 
 # Python
 __pycache__/

@@ -88,10 +88,13 @@ st.warning(
 with st.sidebar:
     st.header("Run")
     name = st.text_input("Portfolio name", value="")
-    cash_m = st.number_input("Cash ($M)", value=0.0, step=1.0,
+    cash_m = st.number_input("Add cash ($M)", value=0.0, step=1.0,
                              help="AUM = net market value + cash; % columns are "
-                                  "% of AUM. IBKR files carry cash automatically; "
-                                  "for Goldman, enter it here (0 = none/unknown).")
+                                  "% of AUM. IBKR files include their cash "
+                                  "automatically — enter only cash your files "
+                                  "omit (e.g. the Goldman account's balance). It "
+                                  "ADDS to file-reported cash. Use negative for a "
+                                  "margin debit. 0 = add nothing.")
     asof_override = st.date_input("As-of date (optional)", value=None)
     with_factors = st.toggle("Factor model, stress & VaR", value=True)
     with_hedge = st.toggle("Hedge suggestion", value=True, disabled=not with_factors)
@@ -131,7 +134,8 @@ def _do_run():
             cash=(cash_m * 1e6) if cash_m else None,
             name=name or None,
             asof=asof_override if isinstance(asof_override, date) else None,
-            out_dir=OUT_DIR, cache_dir=CACHE_DIR, alerts_path=alerts_path,
+            out_dir=OUT_DIR, cache_dir=CACHE_DIR, snap_dir=SNAP_DIR,
+            alerts_path=alerts_path,
             no_factors=not with_factors, no_hedge=not with_hedge, progress=prog,
         )
         status.update(label=f"Done in {res.elapsed_s:.0f}s", state="complete",

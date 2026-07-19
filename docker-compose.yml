@@ -1,0 +1,32 @@
+# Portfolio risk web app — one-file deploy for Synology Container Manager
+# (or any Docker/Compose host).
+#
+# Synology:  Container Manager → Project → Create → set the path to this repo
+#            folder (it contains the Dockerfile) → it builds and runs this.
+# CLI host:  `docker compose up -d --build`
+#
+# Then open  http://<NAS-LAN-IP>:8501  and log in with APP_PASSWORD.
+services:
+  riskapp:
+    build: .
+    image: portfolio-risk:latest
+    container_name: portfolio-risk
+    restart: unless-stopped
+    ports:
+      - "8501:8501"                 # http://<host>:8501
+    environment:
+      # REQUIRED: gates the app behind a login. Change this.
+      APP_PASSWORD: "change-me"
+      # OPTIONAL: enables the AI tab (GLM / z.ai). Leave unset to disable it.
+      # LLM_API_KEY: ""
+      # LLM_MODEL: "glm-4.6"
+    volumes:
+      # Persistent /data: market-data cache + daily snapshots (Trends/attribution
+      # history) + generated PDFs. On Synology this ./data folder lives under the
+      # project's shared folder and survives restarts and image rebuilds.
+      - ./data:/data
+    # The book's factor fit is CPU-heavy; give it room on a NAS.
+    deploy:
+      resources:
+        limits:
+          memory: 3g

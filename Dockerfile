@@ -17,6 +17,7 @@ COPY . .
 # data and daily snapshots persist across restarts (see DEPLOY.md)
 ENV RISK_CACHE_DIR=/data/cache \
     RISK_OUT_DIR=/data/reports \
+    RISK_SNAP_DIR=/data/snapshots \
     PYTHONUNBUFFERED=1
 RUN mkdir -p /data/cache /data/reports /data/snapshots
 
