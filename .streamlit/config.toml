@@ -6,5 +6,13 @@ maxUploadSize = 20
 [browser]
 gatherUsageStats = false
 
+# Palette mirrors the Tape research app (tape.truporchhomesvm.com) so Prism
+# reads as the same product family. Fine detail (cards, tabs, tables) is in
+# riskreport/theme.py, injected at runtime.
 [theme]
-base = "light"
+base = "dark"
+primaryColor = "#60a5fa"
+backgroundColor = "#0b0e14"
+secondaryBackgroundColor = "#131722"
+textColor = "#e6e9f0"
+font = "sans serif"

@@ -30,12 +30,14 @@ from riskreport.narrative import (
 )
 from riskreport.optimizer import OBJECTIVES, optimize_overlay
 from riskreport.pipeline import generate_report
-from riskreport import remote_store
+from riskreport import remote_store, theme
 from riskreport.screener import build_screen_frame, screen
 from riskreport.tags import parse_tags, theme_exposure
 from riskreport.trends import TREND_METRICS, load_trend_series
 
-st.set_page_config(page_title="Portfolio Risk", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Prism — Portfolio Risk", page_icon="📊",
+                   layout="wide")
+theme.inject()
 
 CACHE_DIR = os.environ.get("RISK_CACHE_DIR", "cache")
 OUT_DIR = os.environ.get("RISK_OUT_DIR", "reports")
@@ -71,7 +73,7 @@ def _gate() -> bool:
     expected = _expected_password()
     if not expected or st.session_state.get("authed"):
         return True
-    st.title("📊 Portfolio Risk")
+    theme.brand_header()
     pw = st.text_input("Password", type="password")
     if pw and pw == expected:
         st.session_state["authed"] = True
@@ -84,7 +86,7 @@ def _gate() -> bool:
 if not _gate():
     st.stop()
 
-st.title("📊 Portfolio Risk")
+theme.brand_header()
 st.warning(
     "**Not investment advice · Internal use only.** Figures are model estimates "
     "from free, best-effort market data (Yahoo Finance) that may be delayed, "
