@@ -143,14 +143,15 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             k: round(v / 1e6, 1) for k, v in (risk.get("factor_exposures_net") or {}).items()
         }
     if risk.get("var_95") is not None:
-        facts["var_1d_95_$M"] = round(risk["var_95"] / 1e6, 2)
-        facts["var_1d_99_$M"] = round(risk["var_99"] / 1e6, 2)
-        # vol-aware VaR detail: how much the historical vol spike adds
+        # all 1-day VaR figures live in one block (Monte Carlo added below)
+        var = {"hist_sim_95": round(risk["var_95"] / 1e6, 2),
+               "hist_sim_99": round(risk["var_99"] / 1e6, 2)}
         if risk.get("var_95_spot") is not None:
-            facts["var_1d_95_spot_only_$M"] = round(risk["var_95_spot"] / 1e6, 2)
-            facts["var_vol_addon_$M"] = round(
+            var["spot_only_95"] = round(risk["var_95_spot"] / 1e6, 2)
+            var["vol_addon_95"] = round(
                 (risk["var_95"] - risk["var_95_spot"]) / 1e6, 2)
-            facts["var_is_vol_aware"] = bool(risk.get("vol_aware"))
+            var["vol_aware"] = bool(risk.get("vol_aware"))
+        facts["value_at_risk_1d_$M"] = var
     # option greeks (dollar terms) — a short-premium book reads short gamma,
     # short vega, long theta
     if risk.get("net_vega_1pt") is not None:
@@ -163,16 +164,16 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
     # component VaR: which names drive the expected tail loss (share of ES95)
     if risk.get("top_contributors"):
         facts["top_tail_risk_contributors_pct_of_ES95"] = {
-            c["ticker"]: round(c["pct"], 3) for c in risk["top_contributors"][:6]
+            c["ticker"]: round(c["pct"], 3) for c in risk["top_contributors"][:5]
         }
+    # sector & market-cap net exposure (region dropped — lowest signal)
     for tbl, key in [("sector_table", "by_sector_net_$M"),
-                     ("cap_table", "by_market_cap_net_$M"),
-                     ("region_table", "by_region_net_$M")]:
+                     ("cap_table", "by_market_cap_net_$M")]:
         t = getattr(result.analytics, tbl, None)
         if t is not None and len(t):
             col = t.columns[0]
             facts[key] = {str(r[col]): round(r["net"] / 1e6, 1)
-                          for _, r in t.head(8).iterrows()}
+                          for _, r in t.head(6).iterrows()}
     liq = s.get("liquidity") or {}
     if liq:
         facts["liquidity"] = {
@@ -210,7 +211,7 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
     br = getattr(result, "brinson", None)
     if br is not None:
         top = br.table.reindex(
-            br.table["total"].abs().sort_values(ascending=False).index).head(5)
+            br.table["total"].abs().sort_values(ascending=False).index).head(4)
         facts["performance_attribution_vs_sp500"] = {
             "window": f"{br.start}..{br.end}",
             "active_return_pct": round(br.active * 100, 2),
@@ -225,7 +226,7 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
     fa = getattr(result, "factor_attr", None)
     if fa is not None:
         top = fa.table.reindex(
-            fa.table["pnl"].abs().sort_values(ascending=False).index).head(6)
+            fa.table["pnl"].abs().sort_values(ascending=False).index).head(4)
         facts["factor_return_attribution"] = {
             "window": f"{fa.start}..{fa.end}",
             "realized_pnl_$M": round(fa.realized_pnl / 1e6, 2),
@@ -259,7 +260,7 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
     if fsm is not None and not fsm.empty:
         try:
             from .factor_sector_map import top_cells
-            cells = top_cells(fsm, n=6)
+            cells = top_cells(fsm, n=4)
             if cells:
                 facts["factor_bets_by_sector_$M"] = [
                     {"sector": c["sector"], "factor": c["factor"],
@@ -275,7 +276,7 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
              "risk_share": round(float(r.risk_share), 3),
              "avg_corr": (round(float(r.avg_corr), 2)
                           if r.avg_corr == r.avg_corr else None)}
-            for r in cl.table.head(5).itertuples()
+            for r in cl.table.head(4).itertuples()
         ]
     # concentration / diversification
     con = getattr(result, "concentration", None)
@@ -298,16 +299,14 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "deep_otm_put_vega_$K_tail_vol": round(
                 getattr(lad, "deep_otm_put_vega", 0) / 1e3, 1),
         }
-    # Monte Carlo VaR (parametric, factor model)
+    # Monte Carlo VaR (parametric) — folded into the VaR block for one view
     mc = getattr(result, "mc_var", None)
     if mc is not None:
-        facts["monte_carlo_var"] = {
-            "n_sims": mc.n_sims,
-            "var_1d_95_$M": round(mc.var_95 / 1e6, 2),
-            "var_1d_99_$M": round(mc.var_99 / 1e6, 2),
-            "es_95_$M": round(mc.es_95 / 1e6, 2),
-            "vol_addon_$M": round((mc.var_95 - mc.var_95_spot) / 1e6, 2),
-        }
+        facts.setdefault("value_at_risk_1d_$M", {}).update({
+            "monte_carlo_95": round(mc.var_95 / 1e6, 2),
+            "monte_carlo_99": round(mc.var_99 / 1e6, 2),
+            "monte_carlo_es95": round(mc.es_95 / 1e6, 2),
+        })
     # active risk vs the S&P 500 (tracking error + its factor / name drivers)
     br = getattr(result, "benchmark_risk", None)
     if br is not None:
