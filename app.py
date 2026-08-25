@@ -418,6 +418,38 @@ def _render_concentration(res):
                "See the risk-contributor tables above for the names.")
 
 
+def _render_clusters(res):
+    """Correlation-based risk clusters — the book's implicit thematic bets."""
+    fr = getattr(res, "factor_risk", None)
+    if fr is None or getattr(res, "model", None) is None:
+        return
+    from riskreport.risk_clusters import risk_clusters
+    k = st.slider("Risk clusters", 2, 12, 6, key="cluster_k",
+                  help="Group the largest positions into this many correlated "
+                       "clusters (from the factor-model correlation).")
+    cl = risk_clusters(fr, res.model, n_clusters=k)
+    if cl is None or cl.table.empty:
+        return
+    st.caption(f"The {cl.n_names} largest positions grouped into {cl.n_clusters} "
+               "correlated clusters — implicit thematic bets the position-level "
+               "view doesn't reveal, ordered by share of portfolio risk.")
+    t = cl.table
+    disp = pd.DataFrame({
+        "Cluster": [f"#{i+1}" for i in range(len(t))],
+        "Names": t["n"],
+        "Dominant sector": t["dominant_sector"].astype(str).str.slice(0, 18),
+        "Top members": t["top_members"],
+        "Net exposure": t["net_exposure"].map(_m),
+        "% of risk": t["risk_share"].map(lambda x: f"{x:.0%}"),
+        "Avg corr": t["avg_corr"].map(
+            lambda x: f"{x:.2f}" if pd.notna(x) else "—"),
+    })
+    st.dataframe(disp, hide_index=True, width="stretch")
+    st.bar_chart(t.set_index(
+        t["dominant_sector"].astype(str) + " #" + (t.index + 1).astype(str)
+    )["risk_share"], horizontal=True, height=240)
+
+
 def _render_liquidity(res):
     """Liquidation cost & liquidity-adjusted VaR."""
     if res.analytics is None:
@@ -536,6 +568,7 @@ def render_report(res):
     _render_risk_greeks(res)
     _render_factor_decomp(res)
     _render_concentration(res)
+    _render_clusters(res)
     _render_liquidity(res)
     _render_perf_stats(res)
     _render_montecarlo(res)
