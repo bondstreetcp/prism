@@ -1307,6 +1307,26 @@ def render_options_ladder(res):
     })
     st.dataframe(ecal, hide_index=True, width="stretch")
 
+    st.subheader("Vol exposure by strike (skew)")
+    st.caption("Vega and premium by how far out-of-the-money the strike is. A "
+               "put-writing book concentrates short vega in OTM puts — that's "
+               "short *tail* vol, the exposure that hurts most in a crash.")
+    mm = lad.by_moneyness
+    if mm is not None and not mm.empty:
+        st.markdown("**Net vega by moneyness ($k / +1 vol pt)**")
+        st.bar_chart((mm.set_index("m_bucket")["vega_1pt"] / 1e3), height=240)
+        mdisp = pd.DataFrame({
+            "Moneyness": mm["m_bucket"],
+            "Contracts": mm["n_contracts"].map(lambda x: f"{x:,.0f}"),
+            "Net premium": mm["net_premium"].map(_m),
+            "Vega /1pt": mm["vega_1pt"].map(_kd),
+            "Gamma ±1%": mm["gamma_1pct"].map(_kd),
+        })
+        st.dataframe(mdisp, hide_index=True, width="stretch")
+        st.caption(f"Deep-OTM **put** vega (tail vol): {_kd(lad.deep_otm_put_vega)} "
+                   "per +1 vol point — negative means you lose if crash-tail "
+                   "vol spikes.")
+
 
 def render_macro(res):
     if res.factor_risk is None or res.closes is None:
