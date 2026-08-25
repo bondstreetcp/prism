@@ -439,6 +439,104 @@ def render_optimizer(res):
     st.bar_chart(ex, height=280)
 
 
+def _pct1(x):
+    return "—" if x is None or (isinstance(x, float) and pd.isna(x)) else f"{x:+.1%}"
+
+
+def render_scenarios(res):
+    """Named scenario library — replay historical crises against this book."""
+    from riskreport import scenario_library as scl
+
+    st.markdown("**Scenario library** — reprice *today's* book under historical "
+                "crises (full option revaluation, implied vol shocked by the "
+                "episode's actual VIX move) and hypothetical shocks. An "
+                "instantaneous shock: time to expiry is held fixed.")
+    if res.analytics is None:
+        st.info("Run a report first.")
+        return
+
+    aum = res.summary.get("aum")
+    key = f"scenlib_{res.analytics.asof}"
+    if st.button("▶ Run scenario library", type="primary") or key in st.session_state:
+        if key not in st.session_state:
+            status = st.status("Fetching multi-year history and repricing…",
+                               expanded=True)
+            box = status.empty()
+            lines = []
+
+            def prog(m):
+                lines.append(m); box.code("\n".join(lines))
+
+            try:
+                unders = sorted(res.analytics.positions["underlying"].unique())
+                betas = {t: s.beta for t, s in (res.stats or {}).items()}
+                closes_long = scl.fetch_long_history(
+                    unders, res.analytics.asof, CACHE_DIR, log=prog)
+                results = scl.run_library(
+                    res.analytics.positions, closes_long, betas,
+                    res.analytics.asof, aum, log=prog)
+                st.session_state[key] = results
+                status.update(label=f"Ran {len(results)} scenarios", state="complete",
+                              expanded=False)
+            except Exception as exc:
+                status.update(label="Failed", state="error")
+                st.error(f"Scenario library failed: {exc}")
+                return
+
+        results = st.session_state[key]
+        hist = [r for r in results if r.kind == "historical"]
+        hypo = [r for r in results if r.kind == "hypothetical"]
+
+        def _table(rows):
+            data = []
+            for r in rows:
+                data.append({
+                    "Scenario": r.name,
+                    "Book P&L": _m(r.pnl),
+                    "% AUM": _pct1(r.pnl_pct_aum),
+                    "S&P move": _pct1(r.spx_move),
+                    "VIX move": _pct1(r.vix_move),
+                    "Coverage": f"{r.coverage:.0%}",
+                })
+            return pd.DataFrame(data)
+
+        st.subheader("Historical replays")
+        st.dataframe(_table(hist), hide_index=True, width="stretch")
+        # P&L bar across scenarios
+        pnl_series = pd.Series({r.name: r.pnl / 1e6 for r in hist})
+        st.markdown("**Book P&L by scenario** ($M)")
+        st.bar_chart(pnl_series, horizontal=True, height=260)
+
+        st.subheader("Hypothetical shocks")
+        st.dataframe(_table(hypo), hide_index=True, width="stretch")
+
+        st.subheader("Worst names by scenario")
+        pick = st.selectbox("Scenario", [r.name for r in results])
+        chosen = next(r for r in results if r.name == pick)
+        if chosen.note:
+            st.caption(chosen.note)
+        if chosen.n_proxied or chosen.n_missing:
+            st.caption(f"{chosen.n_proxied} name(s) moved via beta (no history in "
+                       f"the window); {chosen.n_missing} dropped (no history, no "
+                       "beta).")
+        c = chosen.contributors
+        if not c.empty:
+            worst = c.head(10).copy()
+            best = c.tail(5).copy()
+            disp = pd.concat([worst, best]).drop_duplicates("underlying")
+            show = pd.DataFrame({
+                "Ticker": disp["underlying"],
+                "Name": disp["name"].astype(str).str.slice(0, 24),
+                "Sector": disp["sector"].astype(str).str.slice(0, 16),
+                "P&L": disp["pnl"].map(_m),
+            })
+            st.dataframe(show, hide_index=True, width="stretch")
+    else:
+        st.caption("Fetches several years of daily history for your names the "
+                   "first time (cached afterward), so it runs on demand rather "
+                   "than on every report.")
+
+
 def render_macro(res):
     if res.factor_risk is None or res.closes is None:
         st.info("The macro overlay needs the factor model and price history — "
@@ -624,14 +722,16 @@ if result is None:
     st.info("Upload a position CSV in the sidebar and click **Generate report**.")
     st.stop()
 
-(tab_report, tab_trends, tab_bench, tab_opt, tab_macro, tab_screen,
+(tab_report, tab_trends, tab_scen, tab_bench, tab_opt, tab_macro, tab_screen,
  tab_themes, tab_narr) = st.tabs(
-    ["📄 Report", "📈 Trends", "🎯 Benchmark", "🛠 Optimizer", "📉 Macro",
-     "🔎 Screener", "🏷 Themes", "🤖 AI"])
+    ["📄 Report", "📈 Trends", "🌩 Scenarios", "🎯 Benchmark", "🛠 Optimizer",
+     "📉 Macro", "🔎 Screener", "🏷 Themes", "🤖 AI"])
 with tab_report:
     render_report(result)
 with tab_trends:
     render_trends()
+with tab_scen:
+    render_scenarios(result)
 with tab_bench:
     render_benchmark(result)
 with tab_opt:
