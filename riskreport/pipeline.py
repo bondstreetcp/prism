@@ -54,6 +54,7 @@ class ReportResult:
     mc_var: object = None        # Monte Carlo VaR (fixed sample)
     macro: object = None         # macro-proxy sensitivities (for the AI facts)
     concentration: object = None  # concentration/diversification metrics
+    options_ladder: object = None  # options term structure (expiry/theta ladder)
 
 
 def generate_report(
@@ -333,6 +334,14 @@ def generate_report(
         except Exception as exc:
             log(f"  scenario library unavailable: {exc}")
 
+    # options expiry / theta ladder — cheap, from the per-position greeks
+    opt_ladder = None
+    try:
+        from .options_ladder import options_ladder as _ol
+        opt_ladder = _ol(analytics.positions, asof)
+    except Exception as exc:
+        log(f"  options ladder unavailable: {exc}")
+
     # fixed-income (rate) risk for the bond-ETF sleeve — cheap, issuer-level
     fi_risk = None
     try:
@@ -384,5 +393,5 @@ def generate_report(
         factor_attr=factor_attr, factor_returns=factor_returns,
         base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
         benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
-        concentration=concentration,
+        concentration=concentration, options_ladder=opt_ladder,
     )

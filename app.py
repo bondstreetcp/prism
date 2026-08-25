@@ -1076,6 +1076,70 @@ def render_fixedincome(res):
         st.caption(f"⚠ {msg}")
 
 
+def render_options_ladder(res):
+    """Options term structure — greeks and premium by time to expiry."""
+    from riskreport.options_ladder import options_ladder
+
+    st.markdown("**Options expiry ladder** — the term structure of the option "
+                "book: where premium rolls off, where theta is earned, and where "
+                "the short gamma/vega sits. Near-dated options carry the sharpest "
+                "gamma, so a gap into a near expiry hurts most.")
+    if res.analytics is None:
+        st.info("Run a report first.")
+        return
+    lad = options_ladder(res.analytics.positions, res.analytics.asof)
+    if lad is None:
+        st.info("No option positions in this book.")
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Net premium", _m(lad.net_premium),
+              help="Option market value; negative = net short premium collected.")
+    m2.metric("Theta / day", _kd(lad.total_theta_day),
+              help="Total time decay per calendar day (positive = collecting).")
+    m3.metric("Vega / +1 vol pt", _kd(lad.total_vega_1pt))
+    m4.metric("Gamma P&L / ±1%", _kd(lad.total_gamma_1pct))
+    st.caption(f"**{lad.near_theta_share:.0%}** of theta and "
+               f"**{lad.near_gamma_share:.0%}** of gamma risk sit in options "
+               "expiring within 30 days — the near-dated income/pin-risk trade-off.")
+
+    b = lad.by_bucket
+    st.subheader("By time to expiry")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("**Theta / day ($k)**")
+        st.bar_chart((b.set_index("bucket")["theta_day"] / 1e3), height=240)
+    with cc2:
+        st.markdown("**Vega per +1 vol pt ($k)**")
+        st.bar_chart((b.set_index("bucket")["vega_1pt"] / 1e3), height=240)
+    disp = pd.DataFrame({
+        "Bucket": b["bucket"],
+        "Contracts": b["n_contracts"].map(lambda x: f"{x:,.0f}"),
+        "Net premium": b["net_premium"].map(_m),
+        "Delta exp": b["delta_exp"].map(_m),
+        "Gamma ±1%": b["gamma_1pct"].map(_kd),
+        "Vega /1pt": b["vega_1pt"].map(_kd),
+        "Theta /day": b["theta_day"].map(_kd),
+    })
+    st.dataframe(disp, hide_index=True, width="stretch")
+
+    st.subheader("Expiration calendar (premium roll-off)")
+    e = lad.by_expiry.copy()
+    prem = pd.Series((e["net_premium"] / 1e3).values,
+                     index=pd.to_datetime(e["expiry"]).dt.date.astype(str))
+    st.markdown("**Net premium by expiry ($k)** — when the short book rolls off")
+    st.bar_chart(prem, height=240)
+    ecal = pd.DataFrame({
+        "Expiry": pd.to_datetime(e["expiry"]).dt.date.astype(str),
+        "Days": e["dte"].map(lambda x: f"{int(x)}"),
+        "Contracts": e["n_contracts"].map(lambda x: f"{x:,.0f}"),
+        "Net premium": e["net_premium"].map(_m),
+        "Theta /day": e["theta_day"].map(_kd),
+        "Vega /1pt": e["vega_1pt"].map(_kd),
+    })
+    st.dataframe(ecal, hide_index=True, width="stretch")
+
+
 def render_macro(res):
     if res.factor_risk is None or res.closes is None:
         st.info("The macro overlay needs the factor model and price history — "
@@ -1261,11 +1325,11 @@ if result is None:
     st.info("Upload a position CSV in the sidebar and click **Generate report**.")
     st.stop()
 
-(tab_report, tab_trends, tab_scen, tab_pretrade, tab_bench, tab_fi, tab_opt,
- tab_macro, tab_screen, tab_themes, tab_narr) = st.tabs(
+(tab_report, tab_trends, tab_scen, tab_pretrade, tab_bench, tab_fi, tab_optladder,
+ tab_opt, tab_macro, tab_screen, tab_themes, tab_narr) = st.tabs(
     ["📄 Report", "📈 Trends", "🌩 Scenarios", "⚖ Pre-trade", "🎯 Benchmark",
-     "🏦 Fixed Income", "🛠 Optimizer", "📉 Macro", "🔎 Screener", "🏷 Themes",
-     "🤖 AI"])
+     "🏦 Fixed Income", "🗓 Options", "🛠 Optimizer", "📉 Macro", "🔎 Screener",
+     "🏷 Themes", "🤖 AI"])
 with tab_report:
     render_report(result)
 with tab_trends:
@@ -1278,6 +1342,8 @@ with tab_bench:
     render_benchmark(result)
 with tab_fi:
     render_fixedincome(result)
+with tab_optladder:
+    render_options_ladder(result)
 with tab_opt:
     render_optimizer(result)
 with tab_macro:
