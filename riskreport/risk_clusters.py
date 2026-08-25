@@ -81,7 +81,10 @@ def risk_clusters(
         # average pairwise internal correlation
         if len(idx) > 1:
             sub = corr[np.ix_(idx, idx)]
-            avg_corr = float((sub.sum() - len(idx)) / (len(idx) * (len(idx) - 1)))
+            # off-diagonal mean; subtract the actual trace (not len) so a
+            # degenerate zero-variance name with a non-unit diagonal is exact
+            avg_corr = float((sub.sum() - np.trace(sub))
+                             / (len(idx) * (len(idx) - 1)))
         else:
             avg_corr = float("nan")
         # dominant sector by |exposure|
