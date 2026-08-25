@@ -52,6 +52,7 @@ class ReportResult:
     fi_risk: object = None       # fixed-income (rate) risk of the bond-ETF sleeve
     benchmark_risk: object = None  # default-benchmark active risk (TE + MCTE)
     mc_var: object = None        # Monte Carlo VaR (fixed sample)
+    macro: object = None         # macro-proxy sensitivities (for the AI facts)
 
 
 def generate_report(
@@ -294,6 +295,15 @@ def generate_report(
         except Exception as exc:
             log(f"  Monte Carlo VaR unavailable: {exc}")
 
+    # macro-proxy sensitivities (cheap OLS) — carried for the AI narrative
+    macro = None
+    if not no_factors:
+        try:
+            from .macro import compute_macro
+            macro = compute_macro(analytics.positions, closes, asof)
+        except Exception as exc:
+            log(f"  macro overlay unavailable: {exc}")
+
     # Crisis-scenario replays (opt-in: needs a multi-year history fetch)
     scenario_lib: list = []
     if include_scenarios:
@@ -359,5 +369,5 @@ def generate_report(
         brinson=brinson, scenario_lib=scenario_lib,
         factor_attr=factor_attr, factor_returns=factor_returns,
         base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
-        benchmark_risk=benchmark_risk, mc_var=mc_var,
+        benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
     )

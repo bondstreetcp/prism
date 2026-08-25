@@ -294,6 +294,7 @@ def build_analytics(
                 "underlying": p.underlying,
                 "kind": p.kind,
                 "qty": p.qty,
+                "multiplier": p.multiplier,
                 "spot": st.spot,
                 "expiry": p.expiry,
                 "strike": p.strike,

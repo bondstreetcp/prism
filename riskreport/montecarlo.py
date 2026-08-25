@@ -119,8 +119,9 @@ def monte_carlo_var(
             new_spot_only = _bs_price_vec(shocked, row.strike, t_years, iv, row.cp)
             new_vol = _bs_price_vec(shocked, row.strike, t_years,
                                     iv * iv_scale, row.cp)
-            pnl_spot += row.qty * 100.0 * (new_spot_only - base)
-            pnl_vol += row.qty * 100.0 * (new_vol - base)
+            mult = getattr(row, "multiplier", 100) or 100
+            pnl_spot += row.qty * mult * (new_spot_only - base)
+            pnl_vol += row.qty * mult * (new_vol - base)
 
     def _tail(pnl):
         losses = -pnl

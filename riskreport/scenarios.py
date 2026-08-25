@@ -55,7 +55,8 @@ def _reval_position(row, new_spot: float, iv_scale: float, asof: date) -> float:
     iv = base_iv * iv_scale
     base_price, _ = bs_price_delta(row.spot, row.strike, t_years, base_iv, row.cp)
     new_price, _ = bs_price_delta(new_spot, row.strike, t_years, iv, row.cp)
-    return row.qty * 100.0 * (new_price - base_price)
+    mult = getattr(row, "multiplier", 100) or 100
+    return row.qty * mult * (new_price - base_price)
 
 
 @dataclass
@@ -193,8 +194,9 @@ def run_scenarios(
             base_price, _ = bs_price_delta(row.spot, row.strike, t_years, iv, row.cp)
             new_spot_only = _bs_price_vec(shocked, row.strike, t_years, iv, row.cp)
             new_vol = _bs_price_vec(shocked, row.strike, t_years, iv * iv_scale, row.cp)
-            p_spot = row.qty * 100.0 * (new_spot_only - base_price)
-            p_vol = row.qty * 100.0 * (new_vol - base_price)
+            mult = getattr(row, "multiplier", 100) or 100
+            p_spot = row.qty * mult * (new_spot_only - base_price)
+            p_vol = row.qty * mult * (new_vol - base_price)
             pnl_spot += p_spot
             pnl_vol += p_vol
             head_pnl = p_vol if vol_aware else p_spot

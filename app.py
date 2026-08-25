@@ -1105,7 +1105,7 @@ def render_screener(res):
     disp["beta"] = disp["beta"].map(lambda v: f"{v:.2f}" if pd.notna(v) else "—")
     disp["r2"] = disp["r2"].map(lambda v: f"{v:.2f}" if pd.notna(v) else "—")
     for f in fnames:
-        disp[f] = disp[f].map(lambda v: f"{v:+.2f}")
+        disp[f] = disp[f].map(lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
     st.dataframe(disp, hide_index=True, width="stretch")
 
 

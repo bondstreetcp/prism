@@ -33,13 +33,14 @@ SYSTEM_PROMPT = (
     "factor and sector tilts); what drives predicted risk and where concentration "
     "sits; the option-greek profile (net gamma/vega/theta — a short-premium book "
     "is short gamma, short vega, long theta) and how much implied-vol moves add to "
-    "VaR (var_vol_addon vs spot-only) and the Monte Carlo VaR cross-check; which "
-    "names drive the expected tail loss (top_tail_risk_contributors); active risk "
+    "VaR (the vol add-on vs spot-only) plus the Monte Carlo VaR cross-check; which "
+    "names drive the expected tail loss; active risk "
     "vs the S&P (tracking error, which factor bets and which names drive it); "
     "what attribution says drove return — sector "
     "allocation vs selection (Brinson) and which factor bets paid vs stock-"
     "specific (factor attribution); crisis-scenario exposures; interest-rate "
-    "risk of any bond-ETF sleeve (DV01, dollar duration, +100bp P&L); and "
+    "risk of any bond-ETF sleeve (DV01, dollar duration, +100bp P&L); macro "
+    "sensitivities (rates/credit/oil/USD/gold betas); and "
     "notable liquidity or crowding/squeeze exposures and any limit breaches; then "
     "one or two concrete things to watch. Reference the actual numbers. Be "
     "specific, not generic. Do not invent data. Describe risk and positioning; do "
@@ -53,8 +54,11 @@ CHAT_SYSTEM_PROMPT = (
     "theta), vol-aware VaR (with the vol add-on vs spot-only), component VaR (each "
     "name's share of expected tail loss), Brinson performance attribution "
     "(allocation vs selection vs the S&P), factor-based return attribution "
-    "(factor P&L vs stock-specific), and crisis-scenario P&L. Use them when "
-    "relevant. Answer the PM's questions grounded in these numbers. "
+    "(factor P&L vs stock-specific), active risk vs the S&P (tracking error and "
+    "its drivers), Monte Carlo VaR, fixed-income rate risk (DV01/duration), and "
+    "macro sensitivities (rates/credit/oil/USD/gold betas), and crisis-scenario "
+    "P&L. Use them when relevant. Answer the PM's questions grounded in these "
+    "numbers. "
     "When they ask how to change an exposure (e.g. reduce net short momentum), "
     "reason from the factor loadings: name specific instruments and rough dollar "
     "sizes that would move the exposure the right way, and point out side effects "
@@ -102,6 +106,10 @@ def _complete(messages, api_key, model, base_url, max_tokens, temperature=0.4):
 # ----------------------------------------------------------------------
 def build_facts(result, benchmark=None, macro=None) -> dict:
     """Compact, model-friendly facts dict from a ReportResult."""
+    # the pipeline can attach the macro overlay to the result; use it when the
+    # caller didn't pass one so the AI sees macro betas even in the app path
+    if macro is None:
+        macro = getattr(result, "macro", None)
     s = result.summary
     facts: dict = {
         "as_of": str(result.asof),
