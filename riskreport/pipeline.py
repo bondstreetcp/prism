@@ -55,6 +55,7 @@ class ReportResult:
     macro: object = None         # macro-proxy sensitivities (for the AI facts)
     concentration: object = None  # concentration/diversification metrics
     liquidity_cost: object = None  # liquidation cost & liquidity-adjusted VaR
+    perf_stats: object = None    # realized risk/drawdown backtest of the book
     options_ladder: object = None  # options term structure (expiry/theta ladder)
 
 
@@ -343,6 +344,18 @@ def generate_report(
     except Exception as exc:
         log(f"  options ladder unavailable: {exc}")
 
+    # realized risk & drawdown backtest of the current book — cheap
+    perf_stats = None
+    try:
+        from .perf_stats import performance_stats
+        perf_stats = performance_stats(
+            analytics.issuers, closes, asof, aum=analytics.summary.get("aum"))
+        if perf_stats is not None:
+            log(f"Realized vol {perf_stats.ann_vol_pct:.1%}, max drawdown "
+                f"{perf_stats.max_drawdown_pct:.1%}")
+    except Exception as exc:
+        log(f"  performance stats unavailable: {exc}")
+
     # liquidation cost & liquidity-adjusted VaR — cheap, issuer-level
     liquidity_cost = None
     try:
@@ -410,5 +423,5 @@ def generate_report(
         base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
         benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
         concentration=concentration, options_ladder=opt_ladder,
-        liquidity_cost=liquidity_cost,
+        liquidity_cost=liquidity_cost, perf_stats=perf_stats,
     )
