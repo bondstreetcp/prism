@@ -33,8 +33,9 @@ SYSTEM_PROMPT = (
     "factor and sector tilts); what drives predicted risk and where concentration "
     "sits; concentration (effective number of risk bets vs issuers held, "
     "diversification ratio, top-5 share of risk); the option-greek profile "
-    "(net gamma/vega/theta — a short-premium book "
-    "is short gamma, short vega, long theta) and how much implied-vol moves add to "
+    "(net gamma/vega/theta — a short-premium book is short gamma, short vega, "
+    "long theta), the options term structure (how much theta income and gamma "
+    "risk sit in near-dated <30d expiries), and how much implied-vol moves add to "
     "VaR (the vol add-on vs spot-only) plus the Monte Carlo VaR cross-check; which "
     "names drive the expected tail loss; active risk "
     "vs the S&P (tracking error, which factor bets and which names drive it); "
@@ -236,6 +237,16 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "effective_risk_bets": round(con["effective_bets_risk"], 1),
             "diversification_ratio": round(con["diversification_ratio"], 2),
             "top5_share_of_risk": round(con["top5_risk_share"], 3),
+        }
+    # options term structure (expiry / theta ladder)
+    lad = getattr(result, "options_ladder", None)
+    if lad is not None:
+        facts["options_term_structure"] = {
+            "net_premium_$M": round(lad.net_premium / 1e6, 2),
+            "theta_per_day_$K": round(lad.total_theta_day / 1e3, 1),
+            "vega_per_+1volpt_$K": round(lad.total_vega_1pt / 1e3, 1),
+            "pct_theta_within_30d": round(lad.near_theta_share, 2),
+            "pct_gamma_risk_within_30d": round(lad.near_gamma_share, 2),
         }
     # Monte Carlo VaR (parametric, factor model)
     mc = getattr(result, "mc_var", None)
