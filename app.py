@@ -300,6 +300,53 @@ def _render_factor_decomp(res):
                "different questions — forecast vs. historical stress.")
 
 
+def _render_montecarlo(res):
+    """Parametric Monte Carlo VaR (factor-model), run on demand."""
+    if getattr(res, "model", None) is None or res.analytics is None:
+        return
+    st.divider()
+    with st.expander("Monte Carlo VaR — parametric (factor model), run on demand"):
+        st.caption("Draws a large synthetic sample from the fitted factor "
+                   "covariance (+ stock-specific noise), reprices the book with "
+                   "full Black-Scholes option revaluation and a vol co-shock. "
+                   "Complements the historical-sim VaR with a smooth, model-based "
+                   "tail not limited to the last ~250 days.")
+        c1, c2 = st.columns([1, 3])
+        n_sims = c1.select_slider("Simulations", [5000, 10000, 25000, 50000],
+                                  value=10000)
+        run = c1.button("▶ Run Monte Carlo", type="primary")
+        key = f"mc_{res.analytics.asof}_{n_sims}"
+        if run or key in st.session_state:
+            if key not in st.session_state:
+                with st.spinner(f"Simulating {n_sims:,} scenarios…"):
+                    from riskreport.montecarlo import monte_carlo_var
+                    st.session_state[key] = monte_carlo_var(
+                        res.analytics.positions, res.model, res.closes,
+                        res.analytics.asof, n_sims=n_sims)
+            mc = st.session_state[key]
+            if mc is None:
+                st.info("Monte Carlo needs the factor model.")
+                return
+            hist = res.summary.get("risk") or {}
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("MC VaR 95%", _m(mc.var_95), help="1-day, vol-aware")
+            m2.metric("MC VaR 99%", _m(mc.var_99))
+            m3.metric("MC ES 95%", _m(mc.es_95))
+            m4.metric("Hist-sim VaR95", _m(hist.get("var_95")),
+                      help="The historical-simulation VaR, for comparison.")
+            addon = mc.var_95 - mc.var_95_spot
+            st.caption(f"{mc.n_sims:,} sims · vol co-shock β={mc.vol_beta:.1f} "
+                       f"(IV rises when the market falls) · spot-only VaR95 "
+                       f"{_m(mc.var_95_spot)} → vol adds {_m(addon)} · "
+                       f"coverage {mc.coverage:.0%}.")
+            import numpy as np
+            pnl_m = mc.pnl / 1e6
+            counts, edges = np.histogram(pnl_m, bins=60)
+            centers = np.round((edges[:-1] + edges[1:]) / 2, 2)
+            st.markdown("**Simulated 1-day P&L distribution ($M)**")
+            st.bar_chart(pd.Series(counts, index=centers), height=220)
+
+
 def render_report(res):
     if res.alert_hits:
         st.error("⚠ **Risk limit breach(es):**\n\n"
@@ -323,6 +370,7 @@ def render_report(res):
 
     _render_risk_greeks(res)
     _render_factor_decomp(res)
+    _render_montecarlo(res)
 
     st.subheader("Exposure breakdown")
     cats = [("By sector", "sector", None), ("By market cap", "cap_bucket", CAP_ORDER),
