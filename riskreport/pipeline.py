@@ -311,6 +311,7 @@ def generate_report(
         model=model if not no_factors else None,
         bias=bias if not no_factors else None,
         brinson=brinson, scenario_lib=scenario_lib, factor_attr=factor_attr,
+        fi_risk=fi_risk,
     )
 
     s = analytics.summary

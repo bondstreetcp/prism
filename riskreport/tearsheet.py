@@ -197,8 +197,11 @@ FACTOR_LABELS = {
 
 
 def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
-                             factor_attr=None) -> None:
-    """Page 3: Brinson + factor attribution + crisis-scenario replays."""
+                             factor_attr=None, fi_risk=None) -> None:
+    """Page 3+: Brinson + factor attribution + fixed income + crisis scenarios.
+
+    Sections flow onto continuation pages when a single page fills up.
+    """
     import math
 
     def pf(x, dp=1):
@@ -206,41 +209,51 @@ def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
             return "n/a"
         return f"{x:+.{dp}%}"
 
-    y = PAGE_H - MARGIN
-    c.setFillColor(HexColor(INK))
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(MARGIN, y - 14,
-                 f"Performance Attribution & Scenarios — {name}")
-    c.setFont("Helvetica", 8)
-    c.setFillColor(HexColor(INK_2))
-    c.drawRightString(PAGE_W - MARGIN, y - 8,
-                      f"As of {analytics.asof:%B %d, %Y}")
-    c.drawRightString(PAGE_W - MARGIN, y - 18, "Internal use only")
-    c.setStrokeColor(HexColor(BASELINE))
-    c.setLineWidth(0.8)
-    c.line(MARGIN, y - 24, PAGE_W - MARGIN, y - 24)
-    y -= 36
+    def _k(v):
+        return f"{v/1e3:+,.1f}K"
+
+    def _page_header(title):
+        yy = PAGE_H - MARGIN
+        c.setFillColor(HexColor(INK))
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(MARGIN, yy - 14, title)
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawRightString(PAGE_W - MARGIN, yy - 8,
+                          f"As of {analytics.asof:%B %d, %Y}")
+        c.drawRightString(PAGE_W - MARGIN, yy - 18, "Internal use only")
+        c.setStrokeColor(HexColor(BASELINE))
+        c.setLineWidth(0.8)
+        c.line(MARGIN, yy - 24, PAGE_W - MARGIN, yy - 24)
+        return yy - 36
+
+    state = {"y": _page_header(f"Performance Attribution & Scenarios — {name}")}
+
+    def section(title, blurb_lines, table):
+        w, h = table.wrapOn(c, CONTENT_W, PAGE_H) if table is not None else (0, 0)
+        needed = 13 + 11 * len(blurb_lines) + 5 + h + 14
+        if state["y"] - needed < MARGIN + 6:
+            c.showPage()
+            state["y"] = _page_header(
+                "Performance Attribution & Scenarios (cont.)")
+        y = state["y"]
+        c.setFont("Helvetica-Bold", 10)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, title)
+        y -= 13
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        for line in blurb_lines:
+            c.drawString(MARGIN, y, line)
+            y -= 11
+        y -= 5
+        if table is not None:
+            y -= _draw_table(c, table, MARGIN, y) + 14
+        state["y"] = y
 
     # ---------------------------------------------- Brinson attribution
     if brinson is not None:
         b = brinson
-        c.setFont("Helvetica-Bold", 10)
-        c.setFillColor(HexColor(INK))
-        c.drawString(MARGIN, y, "Brinson-Fachler attribution vs S&P 500")
-        y -= 13
-        c.setFont("Helvetica", 8)
-        c.setFillColor(HexColor(INK_2))
-        c.drawString(MARGIN, y,
-                     f"Current holdings {b.start} to {b.end}  ·  portfolio "
-                     f"{pf(b.r_port)}  vs benchmark {pf(b.r_bench)}  ·  active "
-                     f"{pf(b.active, 2)}")
-        y -= 11
-        c.drawString(MARGIN, y,
-                     f"Allocation {pf(b.allocation, 2)}   ·   Selection "
-                     f"{pf(b.selection, 2)}   ·   Interaction "
-                     f"{pf(b.interaction, 2)}   ·   coverage {b.coverage:.0%}")
-        y -= 16
-
         rows = [["Sector", "Wt P", "Wt B", "Ret P", "Ret B",
                  "Alloc", "Selec", "Total"]]
         for r in b.table.itertuples():
@@ -251,23 +264,19 @@ def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
             ])
         rows.append(["Total", "", "", pf(b.r_port), pf(b.r_bench),
                      pf(b.allocation, 2), pf(b.selection, 2), pf(b.active, 2)])
-        t = _table(rows, [116, 40, 40, 46, 46, 50, 50, 50])
-        y -= _draw_table(c, t, MARGIN, y) + 14
+        section(
+            "Brinson-Fachler attribution vs S&P 500",
+            [f"Current holdings {b.start} to {b.end}  ·  portfolio "
+             f"{pf(b.r_port)}  vs benchmark {pf(b.r_bench)}  ·  active "
+             f"{pf(b.active, 2)}",
+             f"Allocation {pf(b.allocation, 2)}   ·   Selection "
+             f"{pf(b.selection, 2)}   ·   Interaction {pf(b.interaction, 2)}"
+             f"   ·   coverage {b.coverage:.0%}"],
+            _table(rows, [116, 40, 40, 46, 46, 50, 50, 50]))
 
     # ---------------------------------------------- factor return attribution
     if factor_attr is not None:
         fa = factor_attr
-        c.setFont("Helvetica-Bold", 10)
-        c.setFillColor(HexColor(INK))
-        c.drawString(MARGIN, y, "Factor-based return attribution")
-        y -= 13
-        c.setFont("Helvetica", 8)
-        c.setFillColor(HexColor(INK_2))
-        c.drawString(MARGIN, y, f"Realized book P&L {fa.start} to {fa.end}: "
-                                f"{_m(fa.realized_pnl)}M  =  factors "
-                                f"{_m(fa.factor_pnl)}M  +  specific "
-                                f"{_m(fa.specific_pnl)}M")
-        y -= 16
         rows = [["Factor", "Net exp $M", "Factor ret", "P&L $M"]]
         ft = fa.table.reindex(
             fa.table["pnl"].abs().sort_values(ascending=False).index)
@@ -276,35 +285,50 @@ def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
                          _m(r.pnl)])
         rows.append(["Specific", "", "", _m(fa.specific_pnl)])
         rows.append(["Total (realized)", "", "", _m(fa.realized_pnl)])
-        t = _table(rows, [140, 70, 60, 60])
-        y -= _draw_table(c, t, MARGIN, y) + 14
+        section(
+            "Factor-based return attribution",
+            [f"Realized book P&L {fa.start} to {fa.end}: {_m(fa.realized_pnl)}M"
+             f"  =  factors {_m(fa.factor_pnl)}M  +  specific "
+             f"{_m(fa.specific_pnl)}M"],
+            _table(rows, [140, 70, 60, 60]))
+
+    # ---------------------------------------------- fixed-income (rate) risk
+    if fi_risk is not None:
+        fi = fi_risk
+        krd = fi.krd_dv01
+        rows = [["Holding", "Type", "MV $M", "Dur", "DV01 $K/bp"]]
+        for r in fi.holdings.itertuples():
+            rows.append([str(r.underlying)[:10], str(r.kind).upper(),
+                         _m(r.mv), f"{r.duration:.1f}", f"{r.dv01/1e3:+.1f}"])
+        section(
+            "Fixed-income (rate) risk",
+            [f"FI market value {_m(fi.total_mv)}M  ·  DV01 {_k(fi.total_dv01)}/bp"
+             f"  ·  dollar duration {_m(fi.dollar_duration)}M/+1%  ·  CS01 "
+             f"{_k(fi.total_cs01)}/bp",
+             f"Key-rate DV01 ($K/+1bp):  2y {krd['2y']/1e3:+.1f}   "
+             f"5y {krd['5y']/1e3:+.1f}   10y {krd['10y']/1e3:+.1f}   "
+             f"30y {krd['30y']/1e3:+.1f}"],
+            _table(rows, [90, 66, 60, 44, 70]))
+        srows = [["Rate scenario", "Book P&L $M"]]
+        for s in fi.scenarios.itertuples():
+            srows.append([str(s.scenario)[:28], _m(s.pnl)])
+        section("Fixed-income rate scenarios (duration approx.)", [],
+                _table(srows, [170, 90]))
 
     # ---------------------------------------------- crisis scenarios
     if scenario_lib:
-        c.setFont("Helvetica-Bold", 10)
-        c.setFillColor(HexColor(INK))
-        c.drawString(MARGIN, y, "Crisis-scenario replays")
-        y -= 13
-        c.setFont("Helvetica", 8)
-        c.setFillColor(HexColor(INK_2))
-        c.drawString(MARGIN, y, "Today's book repriced through historical "
-                                "crises and hypothetical shocks (full option "
-                                "revaluation, IV shocked by the episode's VIX).")
-        y -= 16
-
         rows = [["Scenario", "S&P", "VIX", "Book P&L $M", "% AUM"]]
         for s in scenario_lib:
             rows.append([
                 str(s.name)[:34], pf(s.spx_move), pf(s.vix_move),
                 _m(s.pnl), pf(s.pnl_pct_aum),
             ])
-        t = _table(rows, [190, 52, 52, 72, 56])
-        y -= _draw_table(c, t, MARGIN, y) + 6
-        c.setFont("Helvetica", 6.4)
-        c.setFillColor(HexColor(INK_2))
-        c.drawString(MARGIN, y, "Instantaneous shock (time to expiry held "
-                                "fixed); names post-dating a window are proxied "
-                                "via beta x the S&P move.")
+        section(
+            "Crisis-scenario replays",
+            ["Today's book repriced through historical crises and hypothetical "
+             "shocks (full option revaluation, IV shocked by the episode's VIX). "
+             "Instantaneous shock; post-window names proxied via beta x S&P."],
+            _table(rows, [190, 52, 52, 72, 56]))
 
 
 def render_tearsheet(
@@ -321,6 +345,7 @@ def render_tearsheet(
     brinson=None,
     scenario_lib=None,
     factor_attr=None,
+    fi_risk=None,
 ) -> Path:
     a = analytics
     s = a.summary
@@ -551,10 +576,11 @@ def render_tearsheet(
                           model, bias)
         c.showPage()
 
-    # page 3: performance attribution (Brinson + factor) + crisis scenarios
-    if brinson is not None or scenario_lib or factor_attr is not None:
+    # page 3+: attribution (Brinson + factor) + fixed income + crisis scenarios
+    if (brinson is not None or scenario_lib or factor_attr is not None
+            or fi_risk is not None):
         _render_attribution_page(c, analytics, name, brinson, scenario_lib,
-                                 factor_attr)
+                                 factor_attr, fi_risk)
         c.showPage()
 
     c.save()
