@@ -253,6 +253,53 @@ def _render_risk_contrib(res):
     st.bar_chart(sec, horizontal=True, height=220)
 
 
+def _render_factor_decomp(res):
+    """Ex-ante (factor-model) decomposition of predicted volatility: which
+    factors and which names drive forecast risk — the forward-looking
+    complement to the tail-based component VaR above."""
+    fr = getattr(res, "factor_risk", None)
+    if fr is None or not getattr(fr, "vol_total", 0):
+        return
+    st.divider()
+    st.subheader("Predicted-volatility drivers (factor model)")
+    st.caption(f"Ex-ante: how the {_m(fr.vol_total)} of predicted annual "
+               "volatility decomposes by risk factor and by name. Shares are "
+               "of predicted variance and sum to 100% (factors + stock-"
+               "specific).")
+
+    # factor + specific contribution to predicted variance
+    fc = (fr.factor_risk_contrib * 100)  # % of variance per factor
+    fc = fc[fc.abs() > 1e-9]
+    specific_share = max(0.0, 1.0 - float(fr.factor_var_share)) * 100
+    contrib = fc.copy()
+    contrib["Stock-specific"] = specific_share
+    contrib = contrib.sort_values(ascending=False).rename("% of variance")
+    cc1, cc2 = st.columns([3, 2])
+    with cc1:
+        st.markdown("**By risk factor** (% of predicted variance)")
+        st.bar_chart(contrib, horizontal=True, height=280)
+    with cc2:
+        st.markdown("**Top names by predicted-vol contribution**")
+        pr = fr.position_risk
+        if pr is not None and len(pr):
+            byname = (pr.groupby("underlying")
+                      .agg(sector=("sector", "first"),
+                           exposure=("exposure", "sum"),
+                           rc=("risk_contrib", "sum"))
+                      .sort_values("rc", ascending=False).head(10)
+                      .reset_index())
+            disp = pd.DataFrame({
+                "Ticker": byname["underlying"],
+                "Sector": byname["sector"].astype(str).str.slice(0, 14),
+                "Exposure": byname["exposure"].map(_m),
+                "% of var": byname["rc"].map(lambda x: f"{x:.1%}"),
+            })
+            st.dataframe(disp, hide_index=True, width="stretch")
+    st.caption("This is ex-ante model risk (factor covariance × exposures); the "
+               "component-VaR table above is realized-tail risk. They answer "
+               "different questions — forecast vs. historical stress.")
+
+
 def render_report(res):
     if res.alert_hits:
         st.error("⚠ **Risk limit breach(es):**\n\n"
@@ -275,6 +322,7 @@ def render_report(res):
                    "delta-adjusted exposure (names without a beta are excluded).")
 
     _render_risk_greeks(res)
+    _render_factor_decomp(res)
 
     st.subheader("Exposure breakdown")
     cats = [("By sector", "sector", None), ("By market cap", "cap_bucket", CAP_ORDER),
@@ -445,6 +493,27 @@ def render_benchmark(res):
         show[k] = show[k].map(lambda v: f"{v:,.1f}")
     show.columns = [f"{c} $M" for c in show.columns]
     st.dataframe(show, width="stretch")
+
+    st.subheader("Active risk decomposition (what drives tracking error)")
+    st.caption("Each active bet's share of tracking-error variance, and its $ "
+               "contribution to TE. Factor shares + stock-specific sum to 100%.")
+    afc = (br.active_factor_contrib * 100)
+    afc = afc[afc.abs() > 1e-9]
+    decomp = afc.copy()
+    decomp["Stock-specific"] = br.active_specific_share * 100
+    decomp = decomp.sort_values(ascending=False)
+    dc1, dc2 = st.columns([3, 2])
+    with dc1:
+        st.bar_chart(decomp.rename("% of active variance"), horizontal=True,
+                     height=300)
+    with dc2:
+        tbl = pd.DataFrame({
+            "Driver": decomp.index,
+            "% of TE var": decomp.map(lambda x: f"{x:+.0f}%").values,
+            "$ contrib to TE": [
+                _m(x / 100 * br.tracking_error) for x in decomp.values],
+        })
+        st.dataframe(tbl, hide_index=True, width="stretch")
 
 
 def render_optimizer(res):
