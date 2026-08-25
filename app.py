@@ -792,6 +792,167 @@ def render_scenarios(res):
                    "than on every report.")
 
 
+def _parse_trade_lines(text):
+    """Parse 'Symbol, Qty' lines into Position trades (broker symbol format)."""
+    from riskreport.parse import build_position
+    trades, issues = [], []
+    for i, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "," not in line:
+            issues.append(f"line {i}: expected 'Symbol, Qty'")
+            continue
+        sym, qtxt = line.split(",", 1)
+        sym, qtxt = sym.strip(), qtxt.strip().replace(",", "")
+        if sym.lower() in ("symbol", "ticker"):
+            continue
+        try:
+            qty = float(qtxt)
+        except ValueError:
+            issues.append(f"line {i}: unreadable quantity {qtxt!r}")
+            continue
+        if qty == 0:
+            continue
+        pos, err = build_position("WHATIF", sym, qty)
+        if err:
+            issues.append(f"line {i}: {err}")
+            continue
+        trades.append(pos)
+    return trades, issues
+
+
+def render_pretrade(res):
+    """Pre-trade compliance & risk-impact: reprice the book with proposed
+    trades and show how risk metrics and limit status would change."""
+    from riskreport.whatif import apply_trades
+    from riskreport.analytics import build_analytics
+    from riskreport.alerts import evaluate_limits
+
+    st.markdown("**Pre-trade compliance & risk-impact** — enter proposed trades "
+                "(signed quantities, broker symbol format, options too) and see "
+                "how the book's risk and limit status *would* change before you "
+                "execute.")
+    if (res.analytics is None or res.model is None
+            or not getattr(res, "base_positions", None)):
+        st.info("Run a report first (with the factor model enabled).")
+        return
+    st.code("# Symbol, Quantity  (+ buys, - sells/shorts)\n"
+            "SPY,-2000\nMDT,1500\nAAPL  16JAN26 200 P,-25", language="text")
+    txt = st.text_area("Proposed trades", height=130,
+                       placeholder="SPY,-2000\nNVDA,1000")
+    if not st.button("⚖ Check trades", type="primary"):
+        return
+    trades, issues = _parse_trade_lines(txt)
+    for m in issues:
+        st.caption(f"⚠ {m}")
+    if not trades:
+        st.warning("No valid trades parsed.")
+        return
+
+    with st.spinner("Repricing the proposed book…"):
+        proposed_pos = apply_trades(res.base_positions, trades)
+        asof = res.analytics.asof
+        try:
+            prop = build_analytics(proposed_pos, res.stats, res.profiles, {},
+                                   asof=asof, cash=res.summary.get("cash"))
+        except Exception as exc:
+            st.error(f"Could not reprice proposed book: {exc}")
+            return
+        prop_fr = prop_sc = None
+        try:
+            from riskreport.factors import compute_factor_risk
+            prop_fr = compute_factor_risk(prop.positions, res.model)
+        except Exception:
+            pass
+        try:
+            from riskreport.scenarios import run_scenarios
+            betas = {t: s.beta for t, s in (res.stats or {}).items()}
+            prop_sc = run_scenarios(prop.positions, res.closes, betas, asof)
+        except Exception:
+            pass
+
+    cfg = getattr(res, "alert_config", None)
+    before = {r["key"]: r for r in evaluate_limits(
+        res.analytics, res.factor_risk, res.scenarios, cfg, res.crowding)}
+    after = {r["key"]: r for r in evaluate_limits(
+        prop, prop_fr, prop_sc, cfg, res.crowding)}
+
+    st.caption(f"{len(trades)} trade(s) applied · {len(proposed_pos)} positions "
+               f"after. {len(prop.issues)} data note(s) on the proposed book.")
+
+    # verdict on configured limits
+    limited = [k for k in after if after[k]["limit"] is not None]
+    new_breaches = [k for k in limited
+                    if after[k]["breached"] and not before.get(k, {}).get("breached")]
+    cured = [k for k in limited
+             if before.get(k, {}).get("breached") and not after[k]["breached"]]
+    if cfg is None:
+        st.info("No risk-limit config loaded (upload a JSON in the sidebar to "
+                "check limits) — showing risk-metric deltas only.")
+    elif new_breaches:
+        st.error("⛔ **Would breach:** "
+                 + ", ".join(after[k]["label"] for k in new_breaches))
+    else:
+        st.success("✓ No new limit breaches from these trades.")
+    if cured:
+        st.success("✓ Would cure: "
+                   + ", ".join(before[k]["label"] for k in cured))
+
+    # limit table
+    if cfg is not None and limited:
+        rows = []
+        for k in limited:
+            a = after[k]
+            b = before.get(k)
+            fmt = a["fmt"]
+            rows.append({
+                "Check": a["label"],
+                "Before": fmt(b["value"]) if b and b["value"] is not None else "—",
+                "After": fmt(a["value"]) if a["value"] is not None else "—",
+                "Cap": fmt(a["limit"]),
+                "Status": "⛔ BREACH" if a["breached"] else "✓ OK",
+            })
+        st.markdown("**Limit checks**")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    # headline risk deltas (always)
+    bs, as_ = res.analytics.summary, prop.summary
+    def ng(su):
+        return abs(su["exp_net"]) / (su["exp_gross"] or 1.0)
+    metrics = [
+        ("Gross exposure", bs["exp_gross"], as_["exp_gross"], _m),
+        ("Net exposure", bs["exp_net"], as_["exp_net"], _m),
+        ("Net / gross", ng(bs), ng(as_), lambda v: f"{v:.0%}"),
+        ("Beta-adjusted net", bs["beta_net"], as_["beta_net"], _m),
+    ]
+    if res.factor_risk is not None and prop_fr is not None:
+        metrics.append(("Predicted vol (ann.)", res.factor_risk.vol_total,
+                        prop_fr.vol_total, _m))
+    if res.scenarios is not None and prop_sc is not None:
+        metrics.append(("1-day VaR 95%", res.scenarios.var_95,
+                        prop_sc.var_95, _m))
+    bg, ag = bs.get("greeks") or {}, as_.get("greeks") or {}
+    if ag:
+        metrics += [
+            ("Net vega (/ +1 vol pt)", bg.get("net_vega_1pt"),
+             ag.get("net_vega_1pt"), _kd),
+            ("Net theta (/ day)", bg.get("net_theta_day"),
+             ag.get("net_theta_day"), _kd),
+        ]
+    drows = []
+    for label, bval, aval, fmt in metrics:
+        chg = (aval - bval) if (bval is not None and aval is not None) else None
+        drows.append({
+            "Metric": label,
+            "Before": fmt(bval) if bval is not None else "—",
+            "After": fmt(aval) if aval is not None else "—",
+            "Change": fmt(chg) if chg is not None else "—",
+        })
+    st.markdown("**Risk-metric impact**")
+    st.dataframe(pd.DataFrame(drows), hide_index=True, width="stretch")
+
+
 def render_macro(res):
     if res.factor_risk is None or res.closes is None:
         st.info("The macro overlay needs the factor model and price history — "
@@ -977,16 +1138,18 @@ if result is None:
     st.info("Upload a position CSV in the sidebar and click **Generate report**.")
     st.stop()
 
-(tab_report, tab_trends, tab_scen, tab_bench, tab_opt, tab_macro, tab_screen,
- tab_themes, tab_narr) = st.tabs(
-    ["📄 Report", "📈 Trends", "🌩 Scenarios", "🎯 Benchmark", "🛠 Optimizer",
-     "📉 Macro", "🔎 Screener", "🏷 Themes", "🤖 AI"])
+(tab_report, tab_trends, tab_scen, tab_pretrade, tab_bench, tab_opt, tab_macro,
+ tab_screen, tab_themes, tab_narr) = st.tabs(
+    ["📄 Report", "📈 Trends", "🌩 Scenarios", "⚖ Pre-trade", "🎯 Benchmark",
+     "🛠 Optimizer", "📉 Macro", "🔎 Screener", "🏷 Themes", "🤖 AI"])
 with tab_report:
     render_report(result)
 with tab_trends:
     render_trends()
 with tab_scen:
     render_scenarios(result)
+with tab_pretrade:
+    render_pretrade(result)
 with tab_bench:
     render_benchmark(result)
 with tab_opt:

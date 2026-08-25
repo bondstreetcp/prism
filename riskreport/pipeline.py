@@ -47,6 +47,8 @@ class ReportResult:
     factor_attr: object = None  # factor-based return attribution (PDF + app)
     factor_returns: object = None  # Ken French daily factors (app re-slices windows)
     scenario_lib: list = field(default_factory=list)  # crisis replays (opt-in)
+    base_positions: list = field(default_factory=list)  # for pre-trade what-if
+    alert_config: object = None  # risk-limit config, for pre-trade checks
 
 
 def generate_report(
@@ -240,6 +242,7 @@ def generate_report(
 
     from .alerts import check_alerts, load_config
     alert_hits: list[str] = []
+    cfg = None
     try:
         cfg = load_config(alerts_path)
         alert_hits = check_alerts(analytics, factor_risk, scenarios, cfg, crowding)
@@ -319,4 +322,5 @@ def generate_report(
         stats=stats, closes=closes, profiles=profiles,
         brinson=brinson, scenario_lib=scenario_lib,
         factor_attr=factor_attr, factor_returns=factor_returns,
+        base_positions=parsed.positions, alert_config=cfg,
     )
