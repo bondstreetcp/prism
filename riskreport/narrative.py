@@ -31,17 +31,25 @@ SYSTEM_PROMPT = (
     "in $M unless a key says otherwise). Write a tight risk commentary a PM would "
     "actually read: headline positioning (net/gross, market direction, biggest "
     "factor and sector tilts); what drives predicted risk and where concentration "
-    "sits; notable tail/scenario, liquidity, or crowding/squeeze exposures and any "
-    "limit breaches; and one or two concrete things to watch. Reference the actual "
-    "numbers. Be specific, not generic. Do not invent data. Describe risk and "
-    "positioning; do not give buy/sell investment advice. Write prose, 3-5 short "
-    "paragraphs."
+    "sits; the option-greek profile (net gamma/vega/theta — a short-premium book "
+    "is short gamma, short vega, long theta) and how much implied-vol moves add to "
+    "VaR (var_vol_addon vs spot-only); which names drive the expected tail loss "
+    "(top_tail_risk_contributors); what performance attribution says drove active "
+    "return vs the S&P (allocation vs selection); crisis-scenario exposures; and "
+    "notable liquidity or crowding/squeeze exposures and any limit breaches; then "
+    "one or two concrete things to watch. Reference the actual numbers. Be "
+    "specific, not generic. Do not invent data. Describe risk and positioning; do "
+    "not give buy/sell investment advice. Write prose, 3-5 short paragraphs."
 )
 
 CHAT_SYSTEM_PROMPT = (
     "You are a buy-side risk analyst chatting with the PM about their book. You "
     "have a JSON risk snapshot and a reference table of factor loadings for a menu "
-    "of liquid hedge ETFs. Answer the PM's questions grounded in these numbers. "
+    "of liquid hedge ETFs. The snapshot may include option greeks (net gamma/vega/"
+    "theta), vol-aware VaR (with the vol add-on vs spot-only), component VaR (each "
+    "name's share of expected tail loss), Brinson performance attribution "
+    "(allocation vs selection vs the S&P), and crisis-scenario P&L. Use them when "
+    "relevant. Answer the PM's questions grounded in these numbers. "
     "When they ask how to change an exposure (e.g. reduce net short momentum), "
     "reason from the factor loadings: name specific instruments and rough dollar "
     "sizes that would move the exposure the right way, and point out side effects "
@@ -116,6 +124,26 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
     if risk.get("var_95") is not None:
         facts["var_1d_95_$M"] = round(risk["var_95"] / 1e6, 2)
         facts["var_1d_99_$M"] = round(risk["var_99"] / 1e6, 2)
+        # vol-aware VaR detail: how much the historical vol spike adds
+        if risk.get("var_95_spot") is not None:
+            facts["var_1d_95_spot_only_$M"] = round(risk["var_95_spot"] / 1e6, 2)
+            facts["var_vol_addon_$M"] = round(
+                (risk["var_95"] - risk["var_95_spot"]) / 1e6, 2)
+            facts["var_is_vol_aware"] = bool(risk.get("vol_aware"))
+    # option greeks (dollar terms) — a short-premium book reads short gamma,
+    # short vega, long theta
+    if risk.get("net_vega_1pt") is not None:
+        facts["option_greeks"] = {
+            "net_delta_$M": round(risk.get("net_delta", 0) / 1e6, 1),
+            "net_gamma_pnl_per_1pct_$K": round(risk.get("net_gamma_1pct", 0) / 1e3, 1),
+            "net_vega_per_+1volpt_$K": round(risk.get("net_vega_1pt", 0) / 1e3, 1),
+            "net_theta_per_day_$K": round(risk.get("net_theta_day", 0) / 1e3, 1),
+        }
+    # component VaR: which names drive the expected tail loss (share of ES95)
+    if risk.get("top_contributors"):
+        facts["top_tail_risk_contributors_pct_of_ES95"] = {
+            c["ticker"]: round(c["pct"], 3) for c in risk["top_contributors"][:6]
+        }
     for tbl, key in [("sector_table", "by_sector_net_$M"),
                      ("cap_table", "by_market_cap_net_$M"),
                      ("region_table", "by_region_net_$M")]:
@@ -156,6 +184,29 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
         facts["macro_betas_$K_per_1pct_move"] = {
             r["factor"]: round(r["beta_per_1pct"] / 1e3, 1)
             for _, r in macro.betas.iterrows()
+        }
+    # Brinson performance attribution vs the S&P 500 (from the pipeline's 3M run)
+    br = getattr(result, "brinson", None)
+    if br is not None:
+        top = br.table.reindex(
+            br.table["total"].abs().sort_values(ascending=False).index).head(5)
+        facts["performance_attribution_vs_sp500"] = {
+            "window": f"{br.start}..{br.end}",
+            "active_return_pct": round(br.active * 100, 2),
+            "allocation_pct": round(br.allocation * 100, 2),
+            "selection_pct": round(br.selection * 100, 2),
+            "interaction_pct": round(br.interaction * 100, 2),
+            "top_sector_contributions_pct": {
+                str(r.sector): round(r.total * 100, 2) for r in top.itertuples()
+            },
+        }
+    # crisis-scenario replays (only when the run included them)
+    lib = getattr(result, "scenario_lib", None)
+    if lib:
+        facts["crisis_scenario_book_pnl_pct_aum"] = {
+            r.name: (round(r.pnl_pct_aum * 100, 1)
+                     if r.pnl_pct_aum is not None else None)
+            for r in lib
         }
     if result.alert_hits:
         facts["limit_breaches"] = result.alert_hits
