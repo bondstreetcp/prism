@@ -30,7 +30,7 @@ from riskreport.narrative import (
 )
 from riskreport.optimizer import OBJECTIVES, optimize_overlay
 from riskreport.pipeline import generate_report
-from riskreport import remote_store, theme
+from riskreport import remote_store, theme, version
 from riskreport.screener import build_screen_frame, screen
 from riskreport.tags import parse_tags, theme_exposure
 from riskreport.trends import TREND_METRICS, load_trend_series
@@ -99,6 +99,27 @@ def _gate() -> bool:
 if not _gate():
     st.stop()
 
+
+@st.dialog("✨ What's new in Prism")
+def _whats_new_dialog():
+    ver, dt, bullets = version.WHATS_NEW[0]
+    st.caption(f"{version.build_label()}")
+    st.markdown(f"**Version {ver}** — {dt}. A big expansion of Prism's risk and "
+                "attribution analytics:")
+    for b in bullets:
+        st.markdown(f"- {b}")
+    st.caption("Explore the new tabs (🗓 Options, 🏦 Fixed Income, ⚖ Pre-trade, "
+               "🌩 Scenarios) and the new sections on the Report and Benchmark tabs.")
+    if st.button("Got it", type="primary"):
+        st.rerun()
+
+
+# splash on first load of a session — set the flag before showing so it appears
+# exactly once even if dismissed with the X
+if not st.session_state.get("whatsnew_seen"):
+    st.session_state["whatsnew_seen"] = True
+    _whats_new_dialog()
+
 theme.brand_header()
 st.warning(
     "**Not investment advice · Internal use only.** Figures are model estimates "
@@ -133,6 +154,10 @@ with st.sidebar:
                                      "multiple accounts (Goldman + IBKR) into one book.")
     run = st.button("Generate report", type="primary", disabled=not uploaded)
     st.caption("First run for a new book takes a few minutes; repeats are cached.")
+    st.divider()
+    st.caption(version.build_label())
+    if st.button("✨ What's new", width="stretch"):
+        _whats_new_dialog()
 
 
 def _do_run():
