@@ -18,8 +18,12 @@ COPY . .
 ENV RISK_CACHE_DIR=/data/cache \
     RISK_OUT_DIR=/data/reports \
     RISK_SNAP_DIR=/data/snapshots \
-    PYTHONUNBUFFERED=1
-RUN mkdir -p /data/cache /data/reports /data/snapshots
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp \
+    MPLCONFIGDIR=/tmp/mpl
+# world-writable so hosts that run the container as a non-root user
+# (e.g. Hugging Face Spaces) can still write the cache and snapshots
+RUN mkdir -p /data/cache /data/reports /data/snapshots && chmod -R 777 /data
 
 EXPOSE 8501
 # honour the platform's $PORT if set (Render/Railway/Fly), else 8501

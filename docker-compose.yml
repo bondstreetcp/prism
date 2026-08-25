@@ -17,9 +17,12 @@ services:
     environment:
       # REQUIRED: gates the app behind a login. Change this.
       APP_PASSWORD: "change-me"
-      # OPTIONAL: enables the AI tab (GLM / z.ai). Leave unset to disable it.
+      # OPTIONAL: enables the AI tab. Cloud-first via OpenRouter — GLM served from
+      # US hosts (account-wide provider pinning in the OpenRouter dashboard) instead
+      # of api.z.ai direct. Set the key on the NAS to turn the tab on.
       # LLM_API_KEY: ""
-      # LLM_MODEL: "glm-4.6"
+      LLM_MODEL: "z-ai/glm-5.2"
+      LLM_BASE_URL: "https://openrouter.ai/api/v1"
     volumes:
       # Persistent /data: market-data cache + daily snapshots (Trends/attribution
       # history) + generated PDFs. On Synology this ./data folder lives under the
