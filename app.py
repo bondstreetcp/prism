@@ -463,6 +463,55 @@ def _render_liquidity(res):
         st.caption(f"⚠ {m}")
 
 
+def _render_perf_stats(res):
+    """Realized risk & drawdown — a backtest of the current book."""
+    if res.analytics is None or res.closes is None:
+        return
+    from riskreport.perf_stats import performance_stats
+    ps = performance_stats(res.analytics.issuers, res.closes, res.analytics.asof,
+                           aum=res.summary.get("aum"))
+    if ps is None:
+        return
+    st.divider()
+    st.subheader("Realized risk & drawdown (trailing 1y, current holdings)")
+    st.caption("What today's book would have done over the last ~year "
+               "(buy-and-hold, options at their underlying's return). A reality "
+               "check on the predicted vol and VaR.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Realized vol (ann.)", _m(ps.ann_vol),
+              help=f"{ps.ann_vol_pct:.1%} of "
+                   f"{'AUM' if res.summary.get('aum') else 'gross'}.")
+    risk = res.summary.get("risk") or {}
+    if risk.get("vol_total"):
+        m2.metric("vs predicted vol", _m(risk["vol_total"]),
+                  delta=f"{ps.ann_vol/risk['vol_total']-1:+.0%}",
+                  delta_color="off",
+                  help="Realized ÷ predicted — near 1.0 means the model is "
+                       "well-calibrated.")
+    m3.metric("Max drawdown", f"{ps.max_drawdown_pct:.1%}",
+              help=f"Longest drawdown ran {ps.max_dd_days} trading days.")
+    m4.metric("Realized 1-day VaR95", _m(ps.realized_var95),
+              delta=(f"model {_m(risk.get('var_95'))}"
+                     if risk.get("var_95") else None), delta_color="off",
+              help="Empirical 5th-percentile daily loss. This backtest is "
+                   "delta-only (options at their underlying's return), so for "
+                   "an options book it understates the gamma/vega tail that the "
+                   "vol-aware model VaR captures — a lower value here is not the "
+                   "model being conservative.")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("**Cumulative return**")
+        st.line_chart(ps.cum_return.rename("cum return"), height=220)
+    with cc2:
+        st.markdown("**Drawdown**")
+        st.area_chart(ps.drawdown.rename("drawdown"), height=220)
+    st.caption(f"Window return {ps.window_return_pct:+.1%} over {ps.n_days} days "
+               f"· best day {_m(ps.best_day)} · worst day {_m(ps.worst_day)} · "
+               f"ES95 {_m(ps.realized_es95)}.")
+    for m in ps.issues:
+        st.caption(f"⚠ {m}")
+
+
 def render_report(res):
     if res.alert_hits:
         st.error("⚠ **Risk limit breach(es):**\n\n"
@@ -488,6 +537,7 @@ def render_report(res):
     _render_factor_decomp(res)
     _render_concentration(res)
     _render_liquidity(res)
+    _render_perf_stats(res)
     _render_montecarlo(res)
 
     st.subheader("Exposure breakdown")

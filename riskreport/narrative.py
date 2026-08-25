@@ -31,7 +31,9 @@ SYSTEM_PROMPT = (
     "in $M unless a key says otherwise). Write a tight risk commentary a PM would "
     "actually read: headline positioning (net/gross, market direction, biggest "
     "factor and sector tilts); what drives predicted risk and where concentration "
-    "sits; concentration (effective number of risk bets vs issuers held, "
+    "sits; how realized risk compares to predicted (trailing-1y realized vol vs "
+    "predicted vol, max drawdown, realized vs model VaR); concentration "
+    "(effective number of risk bets vs issuers held, "
     "diversification ratio, top-5 share of risk); the option-greek profile "
     "(net gamma/vega/theta — a short-premium book is short gamma, short vega, "
     "long theta), the options term structure (how much theta income and gamma "
@@ -230,6 +232,16 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "specific_pnl_$M": round(fa.specific_pnl / 1e6, 2),
             "top_factor_pnl_$M": {str(r.factor): round(r.pnl / 1e6, 2)
                                   for r in top.itertuples()},
+        }
+    # realized risk & drawdown (current-holdings backtest, trailing ~1y)
+    ps = getattr(result, "perf_stats", None)
+    if ps is not None:
+        facts["realized_backtest_1y"] = {
+            "realized_vol_ann_$M": round(ps.ann_vol / 1e6, 2),
+            "realized_vol_pct": round(ps.ann_vol_pct, 3),
+            "max_drawdown_pct": round(ps.max_drawdown_pct, 3),
+            "realized_1d_var95_$M": round(ps.realized_var95 / 1e6, 2),
+            "window_return_pct": round(ps.window_return_pct, 3),
         }
     # liquidation cost & liquidity-adjusted VaR
     lq = getattr(result, "liquidity_cost", None)
