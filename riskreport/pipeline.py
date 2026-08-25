@@ -43,6 +43,8 @@ class ReportResult:
     stats: dict = field(default_factory=dict)
     closes: object = None      # price history (for macro overlay)
     profiles: dict = field(default_factory=dict)  # for the screener
+    brinson: object = None     # Brinson attribution (PDF + app)
+    scenario_lib: list = field(default_factory=list)  # crisis replays (opt-in)
 
 
 def generate_report(
@@ -58,6 +60,7 @@ def generate_report(
     alerts_path: str | Path | None = None,
     no_factors: bool = False,
     no_hedge: bool = False,
+    include_scenarios: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> ReportResult:
     log = progress or (lambda _msg: None)
@@ -243,6 +246,31 @@ def generate_report(
     except Exception as exc:
         log(f"  alerts unavailable: {exc}")
 
+    # Brinson performance attribution (cheap: sector ETFs already fetched)
+    brinson = None
+    if not no_factors:
+        try:
+            from .attribution_brinson import brinson_attribution
+            brinson = brinson_attribution(analytics.issuers, closes, asof,
+                                          window="3M")
+        except Exception as exc:
+            log(f"  Brinson attribution unavailable: {exc}")
+
+    # Crisis-scenario replays (opt-in: needs a multi-year history fetch)
+    scenario_lib: list = []
+    if include_scenarios:
+        try:
+            from .scenario_library import fetch_long_history, run_library
+            log("Fetching multi-year history for crisis scenarios…")
+            unders = sorted(analytics.positions["underlying"].unique())
+            betas = {t: s.beta for t, s in stats.items()}
+            closes_long = fetch_long_history(unders, asof, cache_dir, log=log)
+            scenario_lib = run_library(analytics.positions, closes_long, betas,
+                                       asof, analytics.summary.get("aum"), log=log)
+            log(f"  ran {len(scenario_lib)} scenarios")
+        except Exception as exc:
+            log(f"  scenario library unavailable: {exc}")
+
     snap_written = save_snapshot(analytics, base_dir=snap_dir)
     log(f"Snapshot archived to {snap_written}")
 
@@ -256,6 +284,7 @@ def generate_report(
         alert_hits=alert_hits, crowding=crowding,
         model=model if not no_factors else None,
         bias=bias if not no_factors else None,
+        brinson=brinson, scenario_lib=scenario_lib,
     )
 
     s = analytics.summary
@@ -277,4 +306,5 @@ def generate_report(
         analytics=analytics, factor_risk=factor_risk, model=model,
         scenarios=scenarios, hedge=hedge, crowding=crowding_obj, bias=bias,
         stats=stats, closes=closes, profiles=profiles,
+        brinson=brinson, scenario_lib=scenario_lib,
     )

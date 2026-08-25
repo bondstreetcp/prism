@@ -196,6 +196,91 @@ FACTOR_LABELS = {
 }
 
 
+def _render_attribution_page(c, analytics, name, brinson, scenario_lib) -> None:
+    """Page 3: Brinson performance attribution + crisis-scenario replays."""
+    import math
+
+    def pf(x, dp=1):
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return "n/a"
+        return f"{x:+.{dp}%}"
+
+    y = PAGE_H - MARGIN
+    c.setFillColor(HexColor(INK))
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(MARGIN, y - 14,
+                 f"Performance Attribution & Scenarios — {name}")
+    c.setFont("Helvetica", 8)
+    c.setFillColor(HexColor(INK_2))
+    c.drawRightString(PAGE_W - MARGIN, y - 8,
+                      f"As of {analytics.asof:%B %d, %Y}")
+    c.drawRightString(PAGE_W - MARGIN, y - 18, "Internal use only")
+    c.setStrokeColor(HexColor(BASELINE))
+    c.setLineWidth(0.8)
+    c.line(MARGIN, y - 24, PAGE_W - MARGIN, y - 24)
+    y -= 36
+
+    # ---------------------------------------------- Brinson attribution
+    if brinson is not None:
+        b = brinson
+        c.setFont("Helvetica-Bold", 10)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, "Brinson-Fachler attribution vs S&P 500")
+        y -= 13
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(MARGIN, y,
+                     f"Current holdings {b.start} to {b.end}  ·  portfolio "
+                     f"{pf(b.r_port)}  vs benchmark {pf(b.r_bench)}  ·  active "
+                     f"{pf(b.active, 2)}")
+        y -= 11
+        c.drawString(MARGIN, y,
+                     f"Allocation {pf(b.allocation, 2)}   ·   Selection "
+                     f"{pf(b.selection, 2)}   ·   Interaction "
+                     f"{pf(b.interaction, 2)}   ·   coverage {b.coverage:.0%}")
+        y -= 16
+
+        rows = [["Sector", "Wt P", "Wt B", "Ret P", "Ret B",
+                 "Alloc", "Selec", "Total"]]
+        for r in b.table.itertuples():
+            rows.append([
+                str(r.sector)[:22], f"{r.w_port:.0%}", f"{r.w_bench:.0%}",
+                pf(r.r_port), pf(r.r_bench), pf(r.allocation, 2),
+                pf(r.selection, 2), pf(r.total, 2),
+            ])
+        rows.append(["Total", "", "", pf(b.r_port), pf(b.r_bench),
+                     pf(b.allocation, 2), pf(b.selection, 2), pf(b.active, 2)])
+        t = _table(rows, [116, 40, 40, 46, 46, 50, 50, 50])
+        y -= _draw_table(c, t, MARGIN, y) + 14
+
+    # ---------------------------------------------- crisis scenarios
+    if scenario_lib:
+        c.setFont("Helvetica-Bold", 10)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, "Crisis-scenario replays")
+        y -= 13
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(MARGIN, y, "Today's book repriced through historical "
+                                "crises and hypothetical shocks (full option "
+                                "revaluation, IV shocked by the episode's VIX).")
+        y -= 16
+
+        rows = [["Scenario", "S&P", "VIX", "Book P&L $M", "% AUM"]]
+        for s in scenario_lib:
+            rows.append([
+                str(s.name)[:34], pf(s.spx_move), pf(s.vix_move),
+                _m(s.pnl), pf(s.pnl_pct_aum),
+            ])
+        t = _table(rows, [190, 52, 52, 72, 56])
+        y -= _draw_table(c, t, MARGIN, y) + 6
+        c.setFont("Helvetica", 6.4)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(MARGIN, y, "Instantaneous shock (time to expiry held "
+                                "fixed); names post-dating a window are proxied "
+                                "via beta x the S&P move.")
+
+
 def render_tearsheet(
     analytics: PortfolioAnalytics,
     name: str,
@@ -207,6 +292,8 @@ def render_tearsheet(
     crowding=None,
     model=None,
     bias=None,
+    brinson=None,
+    scenario_lib=None,
 ) -> Path:
     a = analytics
     s = a.summary
@@ -435,6 +522,11 @@ def render_tearsheet(
     if factor_risk is not None or scenarios is not None:
         _render_risk_page(c, analytics, name, factor_risk, scenarios, hedge,
                           model, bias)
+        c.showPage()
+
+    # page 3: performance attribution (Brinson) + crisis scenarios (if present)
+    if brinson is not None or scenario_lib:
+        _render_attribution_page(c, analytics, name, brinson, scenario_lib)
         c.showPage()
 
     c.save()

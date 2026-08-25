@@ -116,6 +116,11 @@ with st.sidebar:
     asof_override = st.date_input("As-of date (optional)", value=None)
     with_factors = st.toggle("Factor model, stress & VaR", value=True)
     with_hedge = st.toggle("Hedge suggestion", value=True, disabled=not with_factors)
+    with_scenarios = st.toggle("Crisis scenarios in PDF", value=False,
+                               disabled=not with_factors,
+                               help="Adds the crisis-scenario replays to the PDF. "
+                                    "First run fetches multi-year history "
+                                    "(slower); cached afterward.")
     alerts_file = st.file_uploader("Risk-limit config (JSON)", type=["json"])
     uploaded = st.file_uploader("Position CSV(s)", type=["csv"],
                                 accept_multiple_files=True,
@@ -154,7 +159,8 @@ def _do_run():
             asof=asof_override if isinstance(asof_override, date) else None,
             out_dir=OUT_DIR, cache_dir=CACHE_DIR, snap_dir=SNAP_DIR,
             alerts_path=alerts_path,
-            no_factors=not with_factors, no_hedge=not with_hedge, progress=prog,
+            no_factors=not with_factors, no_hedge=not with_hedge,
+            include_scenarios=with_scenarios, progress=prog,
         )
         status.update(label=f"Done in {res.elapsed_s:.0f}s", state="complete",
                       expanded=False)
