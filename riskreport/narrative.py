@@ -255,6 +255,15 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "liquidity_adjusted_var95_$M": (round(lq.lvar / 1e6, 2)
                                             if lq.lvar is not None else None),
         })
+    # portfolio P&L curve — book P&L at key market moves (payoff shape)
+    pc = getattr(result, "pnl_curve", None)
+    if pc is not None:
+        facts["pnl_curve_$M"] = {
+            "at_down_20pct": round(pc.pnl_down20 / 1e6, 2),
+            "at_down_10pct": round(pc.pnl_down10 / 1e6, 2),
+            "at_up_10pct": round(pc.pnl_up10 / 1e6, 2),
+            "worst_in_+-30pct": round(pc.worst_loss / 1e6, 2),
+        }
     # factor exposure by sector — the largest sector×factor bets
     fsm = getattr(result, "factor_sector", None)
     if fsm is not None and not fsm.empty:

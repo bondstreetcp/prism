@@ -58,6 +58,7 @@ class ReportResult:
     perf_stats: object = None    # realized risk/drawdown backtest of the book
     risk_clusters: object = None  # correlation-based risk clusters
     factor_sector: object = None  # sector x factor exposure matrix
+    pnl_curve: object = None      # portfolio P&L curve across market moves
     options_ladder: object = None  # options term structure (expiry/theta ladder)
 
 
@@ -353,6 +354,16 @@ def generate_report(
         except Exception as exc:
             log(f"  scenario library unavailable: {exc}")
 
+    # portfolio P&L curve across market moves — cheap, reprices the book
+    pnl_curve_res = None
+    if not no_factors:
+        try:
+            from .pnl_curve import pnl_curve as _pc
+            betas = {t: st.beta for t, st in stats.items()}
+            pnl_curve_res = _pc(analytics.positions, betas, closes, asof)
+        except Exception as exc:
+            log(f"  P&L curve unavailable: {exc}")
+
     # options expiry / theta ladder — cheap, from the per-position greeks
     opt_ladder = None
     try:
@@ -442,4 +453,5 @@ def generate_report(
         concentration=concentration, options_ladder=opt_ladder,
         liquidity_cost=liquidity_cost, perf_stats=perf_stats,
         risk_clusters=clusters, factor_sector=factor_sector,
+        pnl_curve=pnl_curve_res,
     )
