@@ -567,6 +567,26 @@ def render_benchmark(res):
         })
         st.dataframe(tbl, hide_index=True, width="stretch")
 
+    pac = getattr(br, "position_active_contrib", None)
+    if pac is not None and not pac.empty:
+        st.markdown("**Names driving tracking error** — each holding's "
+                    "contribution to TE (these sum to TE, including a benchmark "
+                    "line). A negative value means the name *reduces* tracking "
+                    "error — a diversifying active bet.")
+        held = pac[~pac["underlying"].str.startswith("[benchmark")]
+        top = pd.concat([held.head(10), held.tail(4)]).drop_duplicates("underlying")
+        disp = pd.DataFrame({
+            "Ticker": top["underlying"],
+            "Name": top["name"].astype(str).str.slice(0, 22),
+            "Sector": top["sector"].astype(str).str.slice(0, 14),
+            "Exposure": top["exposure"].map(_m),
+            "Contrib to TE": top["ctr_te"].map(_m),
+            "% of TE": top["pct_of_te"].map(lambda x: f"{x:+.1%}"),
+            "Marginal / $1M": top["mcte_per_$"].map(
+                lambda v: _kd(v * 1e6) if pd.notna(v) else "—"),
+        })
+        st.dataframe(disp, hide_index=True, width="stretch")
+
 
 def render_optimizer(res):
     if res.factor_risk is None or res.model is None:

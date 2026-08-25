@@ -56,6 +56,7 @@ class BenchmarkRisk:
     te_pct: float                        # tracking error / notional
     active_factor_contrib: pd.Series     # per-factor share of active variance
     active_specific_share: float
+    position_active_contrib: pd.DataFrame  # per-underlying contribution to TE
     port_vol: float
     bench_vol: float
     beta_to_benchmark: float
@@ -100,6 +101,49 @@ def active_risk(
     active_factor_contrib = contrib / active_var if active_var > 0 else contrib * 0.0
     active_specific_share = active_specific_var / active_var if active_var > 0 else 0.0
 
+    # ---- position-level contribution to tracking error (MCTE) -------------
+    # Each name's contribution to TE (a volatility, degree-1 homogeneous, so
+    # contributions sum to TE): CTR_u = x_u·(B_u·F·a + x_u·s_u²)·252 / TE.
+    # The single-ETF benchmark contributes the rest as one line, so the held
+    # names plus the benchmark line sum exactly to TE.
+    Fa = F @ active_exp
+    pr = factor_risk.position_risk
+    pac_rows = []
+    if te > 0 and pr is not None and len(pr):
+        x_by_u = pr.groupby("underlying")["exposure"].sum()
+        meta = pr.groupby("underlying").agg(name=("name", "first"),
+                                            sector=("sector", "first"))
+        names_u = list(x_by_u.index)
+        Bu = model.loadings.loc[names_u, fn].to_numpy()
+        su = model.resid_vol.reindex(names_u).fillna(0.0).to_numpy()
+        xu = x_by_u.to_numpy()
+        # marginal TE per $ of each name, then $ contribution
+        mcte = ((Bu @ Fa) + xu * su ** 2) * TRADING_DAYS / te   # per $1 exposure
+        ctr = xu * mcte                                          # $ contrib to TE
+        for i, u in enumerate(names_u):
+            pac_rows.append({
+                "underlying": u,
+                "name": meta.loc[u, "name"], "sector": meta.loc[u, "sector"],
+                "exposure": float(xu[i]),
+                "ctr_te": float(ctr[i]),
+                "pct_of_te": float(ctr[i] / te),
+                "mcte_per_$": float(mcte[i]),
+            })
+        # benchmark line: -N·B_bench·F·a·252 + bench_specific_var, over TE
+        bench_ctr = (-notional * float(bench_load @ Fa) * TRADING_DAYS
+                     + bench_specific_var) / te
+        pac_rows.append({
+            "underlying": f"[benchmark {benchmark_ticker}]", "name": "Benchmark",
+            "sector": "Benchmark", "exposure": -float(notional),
+            "ctr_te": float(bench_ctr), "pct_of_te": float(bench_ctr / te),
+            "mcte_per_$": float("nan"),
+        })
+    position_active_contrib = (
+        pd.DataFrame(pac_rows).sort_values("ctr_te", ascending=False)
+        .reset_index(drop=True) if pac_rows else pd.DataFrame(
+            columns=["underlying", "name", "sector", "exposure", "ctr_te",
+                     "pct_of_te", "mcte_per_$"]))
+
     # portfolio and benchmark standalone predicted vol
     port_vol = factor_risk.vol_total
     bench_factor_var = float(bench_exp @ F @ bench_exp) * TRADING_DAYS
@@ -124,6 +168,7 @@ def active_risk(
         te_pct=te / abs(notional) if notional else float("nan"),
         active_factor_contrib=active_factor_contrib,
         active_specific_share=active_specific_share,
+        position_active_contrib=position_active_contrib,
         port_vol=port_vol,
         bench_vol=bench_vol,
         beta_to_benchmark=beta_to_bench,
