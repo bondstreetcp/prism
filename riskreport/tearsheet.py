@@ -197,8 +197,10 @@ FACTOR_LABELS = {
 
 
 def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
-                             factor_attr=None, fi_risk=None) -> None:
-    """Page 3+: Brinson + factor attribution + fixed income + crisis scenarios.
+                             factor_attr=None, fi_risk=None,
+                             benchmark_risk=None) -> None:
+    """Page 3+: Brinson + factor attribution + active risk + fixed income +
+    crisis scenarios.
 
     Sections flow onto continuation pages when a single page fills up.
     """
@@ -292,6 +294,31 @@ def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
              f"{_m(fa.specific_pnl)}M"],
             _table(rows, [140, 70, 60, 60]))
 
+    # ---------------------------------------------- active risk vs the S&P 500
+    if benchmark_risk is not None:
+        br = benchmark_risk
+        afc = br.active_factor_contrib
+        top = afc.reindex(afc.abs().sort_values(ascending=False).index)
+        rows = [["Active factor", "% of TE var"]]
+        for kf, v in top.items():
+            rows.append([str(kf)[:20], f"{v*100:+.0f}%"])
+        rows.append(["Stock-specific", f"{br.active_specific_share*100:+.0f}%"])
+        section(
+            "Active risk vs S&P 500 — factor drivers",
+            [f"Tracking error {_m(br.tracking_error)}M "
+             f"({br.te_pct:.1%} of notional)  ·  beta to benchmark "
+             f"{br.beta_to_benchmark:.2f}  ·  benchmark beta-matched to the "
+             "book's market exposure"],
+            _table(rows, [150, 90]))
+        pac = getattr(br, "position_active_contrib", None)
+        if pac is not None and not pac.empty:
+            nrows = [["Name", "% of TE", "Contrib $M"]]
+            for r in pac.head(10).itertuples():
+                nrows.append([str(r.underlying)[:16], f"{r.pct_of_te:+.0%}",
+                              _m(r.ctr_te)])
+            section("Active risk — names driving tracking error", [],
+                    _table(nrows, [140, 60, 70]))
+
     # ---------------------------------------------- fixed-income (rate) risk
     if fi_risk is not None:
         fi = fi_risk
@@ -346,6 +373,8 @@ def render_tearsheet(
     scenario_lib=None,
     factor_attr=None,
     fi_risk=None,
+    benchmark_risk=None,
+    mc_var=None,
 ) -> Path:
     a = analytics
     s = a.summary
@@ -573,14 +602,14 @@ def render_tearsheet(
     # risk page whenever either exists rather than dropping computed numbers
     if factor_risk is not None or scenarios is not None:
         _render_risk_page(c, analytics, name, factor_risk, scenarios, hedge,
-                          model, bias)
+                          model, bias, mc_var)
         c.showPage()
 
     # page 3+: attribution (Brinson + factor) + fixed income + crisis scenarios
     if (brinson is not None or scenario_lib or factor_attr is not None
-            or fi_risk is not None):
+            or fi_risk is not None or benchmark_risk is not None):
         _render_attribution_page(c, analytics, name, brinson, scenario_lib,
-                                 factor_attr, fi_risk)
+                                 factor_attr, fi_risk, benchmark_risk)
         c.showPage()
 
     c.save()
@@ -862,7 +891,7 @@ def render_attribution(result, name: str, out_path: str | Path) -> Path:
 
 
 def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
-                      bias=None) -> None:
+                      bias=None, mc=None) -> None:
     """Page 2: factor model, predicted vol, stress grid, VaR."""
     import math
 
@@ -919,6 +948,11 @@ def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
         if vol_aware and sc.var_95_spot == sc.var_95_spot:
             var_rows.append(
                 ["  vol add-on to VaR95", _v(sc.var_95 - sc.var_95_spot), ""])
+        if mc is not None:
+            var_rows.append([f"Monte Carlo VaR95 ({mc.n_sims//1000}k sims)",
+                             _v(mc.var_95), _vp(mc.var_95)])
+            var_rows.append(["  Monte Carlo VaR99", _v(mc.var_99),
+                             _vp(mc.var_99)])
         var_rows += [
             [f"Worst day in window ({sc.worst_date})", _v(-sc.pnl_worst if sc.pnl_worst == sc.pnl_worst else float('nan')), ""],
             [f"Scenario days used", f"{sc.var_obs}", ""],

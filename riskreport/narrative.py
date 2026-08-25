@@ -33,8 +33,10 @@ SYSTEM_PROMPT = (
     "factor and sector tilts); what drives predicted risk and where concentration "
     "sits; the option-greek profile (net gamma/vega/theta — a short-premium book "
     "is short gamma, short vega, long theta) and how much implied-vol moves add to "
-    "VaR (var_vol_addon vs spot-only); which names drive the expected tail loss "
-    "(top_tail_risk_contributors); what attribution says drove return — sector "
+    "VaR (var_vol_addon vs spot-only) and the Monte Carlo VaR cross-check; which "
+    "names drive the expected tail loss (top_tail_risk_contributors); active risk "
+    "vs the S&P (tracking error, which factor bets and which names drive it); "
+    "what attribution says drove return — sector "
     "allocation vs selection (Brinson) and which factor bets paid vs stock-"
     "specific (factor attribution); crisis-scenario exposures; interest-rate "
     "risk of any bond-ETF sleeve (DV01, dollar duration, +100bp P&L); and "
@@ -216,6 +218,36 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "top_factor_pnl_$M": {str(r.factor): round(r.pnl / 1e6, 2)
                                   for r in top.itertuples()},
         }
+    # Monte Carlo VaR (parametric, factor model)
+    mc = getattr(result, "mc_var", None)
+    if mc is not None:
+        facts["monte_carlo_var"] = {
+            "n_sims": mc.n_sims,
+            "var_1d_95_$M": round(mc.var_95 / 1e6, 2),
+            "var_1d_99_$M": round(mc.var_99 / 1e6, 2),
+            "es_95_$M": round(mc.es_95 / 1e6, 2),
+            "vol_addon_$M": round((mc.var_95 - mc.var_95_spot) / 1e6, 2),
+        }
+    # active risk vs the S&P 500 (tracking error + its factor / name drivers)
+    br = getattr(result, "benchmark_risk", None)
+    if br is not None:
+        afc = br.active_factor_contrib
+        top_fac = afc.reindex(afc.abs().sort_values(ascending=False).index).head(5)
+        blk = {
+            "tracking_error_$M": round(br.tracking_error / 1e6, 2),
+            "te_pct_of_notional": round(br.te_pct, 4),
+            "beta_to_benchmark": round(br.beta_to_benchmark, 2),
+            "active_specific_share": round(br.active_specific_share, 2),
+            "top_active_factor_contrib_pct_of_var": {
+                str(k): round(float(v) * 100, 1) for k, v in top_fac.items()},
+        }
+        pac = getattr(br, "position_active_contrib", None)
+        if pac is not None and not pac.empty:
+            held = pac[~pac["underlying"].astype(str).str.startswith("[benchmark")]
+            blk["top_names_driving_TE_pct"] = {
+                str(r.underlying): round(float(r.pct_of_te) * 100, 1)
+                for r in held.head(6).itertuples()}
+        facts["active_risk_vs_sp500"] = blk
     # fixed-income (interest-rate) risk of the bond-ETF sleeve
     fi = getattr(result, "fi_risk", None)
     if fi is not None:

@@ -50,6 +50,8 @@ class ReportResult:
     base_positions: list = field(default_factory=list)  # for pre-trade what-if
     alert_config: object = None  # risk-limit config, for pre-trade checks
     fi_risk: object = None       # fixed-income (rate) risk of the bond-ETF sleeve
+    benchmark_risk: object = None  # default-benchmark active risk (TE + MCTE)
+    mc_var: object = None        # Monte Carlo VaR (fixed sample)
 
 
 def generate_report(
@@ -271,6 +273,27 @@ def generate_report(
         except Exception as exc:
             log(f"  factor attribution unavailable: {exc}")
 
+    # Default-benchmark active risk (tracking error + factor/name decomposition)
+    # and Monte Carlo VaR, so the PDF and AI carry them too (app lets the user
+    # pick a different benchmark / sim count interactively).
+    benchmark_risk = mc_var = None
+    if not no_factors and factor_risk is not None and model is not None:
+        try:
+            from .benchmark import active_risk
+            benchmark_risk = active_risk(factor_risk, model, "SPY")
+            log(f"Active risk vs SPY: TE ${benchmark_risk.tracking_error/1e6:,.2f}M")
+        except Exception as exc:
+            log(f"  active risk unavailable: {exc}")
+        try:
+            from .montecarlo import monte_carlo_var
+            mc_var = monte_carlo_var(analytics.positions, model, closes, asof,
+                                     n_sims=10000)
+            if mc_var is not None:
+                log(f"Monte Carlo VaR95 ${mc_var.var_95/1e6:,.2f}M "
+                    f"({mc_var.n_sims:,} sims)")
+        except Exception as exc:
+            log(f"  Monte Carlo VaR unavailable: {exc}")
+
     # Crisis-scenario replays (opt-in: needs a multi-year history fetch)
     scenario_lib: list = []
     if include_scenarios:
@@ -311,7 +334,7 @@ def generate_report(
         model=model if not no_factors else None,
         bias=bias if not no_factors else None,
         brinson=brinson, scenario_lib=scenario_lib, factor_attr=factor_attr,
-        fi_risk=fi_risk,
+        fi_risk=fi_risk, benchmark_risk=benchmark_risk, mc_var=mc_var,
     )
 
     s = analytics.summary
@@ -336,4 +359,5 @@ def generate_report(
         brinson=brinson, scenario_lib=scenario_lib,
         factor_attr=factor_attr, factor_returns=factor_returns,
         base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
+        benchmark_risk=benchmark_risk, mc_var=mc_var,
     )
