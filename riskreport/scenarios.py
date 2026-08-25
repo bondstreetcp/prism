@@ -73,6 +73,8 @@ class ScenarioResults:
     var_99_spot: float = float("nan")
     es_95_spot: float = float("nan")
     vol_aware: bool = False
+    # per-underlying tail-risk decomposition (contribution to ES95); sums to es_95
+    risk_contrib: pd.DataFrame | None = None
     issues: list[str] = field(default_factory=list)
 
 
@@ -172,6 +174,8 @@ def run_scenarios(
 
     pnl_spot = np.zeros(obs)   # IV held constant (legacy method)
     pnl_vol = np.zeros(obs)    # IV co-shocked with VIX (vol-aware)
+    # per-underlying head-method P&L, for component/marginal VaR decomposition
+    pnl_by_u: dict[str, np.ndarray] = {}
     for row in pos.itertuples():
         u = row.underlying
         if u not in r.columns:
@@ -181,14 +185,22 @@ def run_scenarios(
             eq_pnl = row.qty * (shocked - row.spot)
             pnl_spot += eq_pnl
             pnl_vol += eq_pnl
+            head_pnl = eq_pnl
         else:
             t_years = (row.expiry - asof).days / 365.0
             iv = row.iv if row.iv and np.isfinite(row.iv) else DEFAULT_IV
             base_price, _ = bs_price_delta(row.spot, row.strike, t_years, iv, row.cp)
             new_spot_only = _bs_price_vec(shocked, row.strike, t_years, iv, row.cp)
             new_vol = _bs_price_vec(shocked, row.strike, t_years, iv * iv_scale, row.cp)
-            pnl_spot += row.qty * 100.0 * (new_spot_only - base_price)
-            pnl_vol += row.qty * 100.0 * (new_vol - base_price)
+            p_spot = row.qty * 100.0 * (new_spot_only - base_price)
+            p_vol = row.qty * 100.0 * (new_vol - base_price)
+            pnl_spot += p_spot
+            pnl_vol += p_vol
+            head_pnl = p_vol if vol_aware else p_spot
+        if u in pnl_by_u:
+            pnl_by_u[u] += head_pnl
+        else:
+            pnl_by_u[u] = head_pnl.copy()
 
     def _var(pnl):
         losses = -pnl
@@ -202,6 +214,36 @@ def run_scenarios(
     pnl_head = pnl_vol if vol_aware else pnl_spot
     v95, v99, es = _var(pnl_head)
     worst_i = int(np.argmax(-pnl_head))
+
+    # ---- component / marginal VaR ------------------------------------------
+    # Allocate tail risk to underlyings by their average P&L on the tail days
+    # (total loss >= VaR95). This "contribution to ES95" is the Euler/additive
+    # decomposition: the parts sum exactly to ES95. Marginal = contribution per
+    # $1M of gross exposure (which names are risk-dense vs risk-cheap).
+    losses_head = -pnl_head
+    tail_mask = losses_head >= v95
+    exp_by_u = pos.groupby("underlying")["exposure"].sum()
+    meta = pos.groupby("underlying").agg(name=("name", "first"),
+                                         sector=("sector", "first"))
+    crows = []
+    for u, arr in pnl_by_u.items():
+        comp = float(np.mean(-arr[tail_mask])) if tail_mask.any() else 0.0
+        expo = float(exp_by_u.get(u, 0.0))
+        crows.append({
+            "underlying": u,
+            "name": meta.loc[u, "name"] if u in meta.index else u,
+            "sector": meta.loc[u, "sector"] if u in meta.index else "Unknown",
+            "exposure": expo,
+            "contrib_es95": comp,                       # sums to es_95
+            "pct_of_es95": comp / es if es else 0.0,
+            # marginal: tail-loss $ per $1M of gross exposure on this name
+            "risk_per_1m": comp / (abs(expo) / 1e6) if abs(expo) > 0 else float("nan"),
+        })
+    risk_contrib = (
+        pd.DataFrame(crows).sort_values("contrib_es95", ascending=False)
+        .reset_index(drop=True)
+        if crows else None
+    )
 
     uncovered = pos.loc[~pos["underlying"].isin(r.columns), "exposure"].abs().sum()
     gross = pos["exposure"].abs().sum()
@@ -224,5 +266,6 @@ def run_scenarios(
         var_99_spot=v99_spot,
         es_95_spot=es_spot,
         vol_aware=vol_aware,
+        risk_contrib=risk_contrib,
         issues=issues,
     )

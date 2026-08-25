@@ -215,7 +215,36 @@ def _render_risk_greeks(res):
         g4.metric("Net theta · per day", _kd(greeks.get("net_theta_day")),
                   help="Time decay per calendar day. Positive = long theta "
                        "(collecting premium).")
+
+    _render_risk_contrib(res)
     st.divider()
+
+
+def _render_risk_contrib(res):
+    """Component / marginal VaR — which names drive the tail loss."""
+    sc = getattr(res, "scenarios", None)
+    rc = getattr(sc, "risk_contrib", None) if sc is not None else None
+    if rc is None or rc.empty:
+        return
+    st.markdown("**Top risk contributors** — share of expected tail loss (ES95). "
+                "Contributions sum to ES95; a negative value means the name "
+                "*cushions* the tail (a diversifier or hedge).")
+    top = rc.head(12)
+    disp = pd.DataFrame({
+        "Ticker": top["underlying"],
+        "Name": top["name"].astype(str).str.slice(0, 24),
+        "Sector": top["sector"].astype(str).str.slice(0, 16),
+        "Exposure": top["exposure"].map(_m),
+        "Contrib to ES95": top["contrib_es95"].map(_m),
+        "% of tail": top["pct_of_es95"].map(lambda x: f"{x:.1%}"),
+        "Risk / $1M expo": top["risk_per_1m"].map(
+            lambda v: _kd(v) if pd.notna(v) else "—"),
+    })
+    st.dataframe(disp, hide_index=True, width="stretch")
+    sec = (rc.groupby("sector")["contrib_es95"].sum()
+           .sort_values(ascending=False) / 1e6)
+    st.markdown("**Risk contribution by sector** ($M of ES95)")
+    st.bar_chart(sec, horizontal=True, height=220)
 
 
 def render_report(res):

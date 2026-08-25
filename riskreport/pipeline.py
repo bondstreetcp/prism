@@ -180,6 +180,15 @@ def generate_report(
         # portfolio greeks (from the option book) travel with the risk block so
         # Trends can plot them and the AI narrative can reason about them
         risk_summary.update(analytics.summary.get("greeks", {}))
+        # top tail-risk contributors (component VaR) — small list for the
+        # snapshot/PDF/AI; the full frame lives on scenarios.risk_contrib
+        if scenarios.risk_contrib is not None:
+            risk_summary["top_contributors"] = [
+                {"ticker": row.underlying, "sector": row.sector,
+                 "contrib_es95": float(row.contrib_es95),
+                 "pct": float(row.pct_of_es95)}
+                for row in scenarios.risk_contrib.head(8).itertuples()
+            ]
         if factor_risk is not None:
             risk_summary.update({
                 "vol_total": factor_risk.vol_total,

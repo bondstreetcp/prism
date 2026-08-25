@@ -811,6 +811,20 @@ def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
         )
         y -= 14
 
+    # ------------------------------ top tail-risk drivers (component VaR)
+    rc = getattr(sc, "risk_contrib", None) if sc is not None else None
+    if rc is not None and not rc.empty:
+        tops = rc.head(6)
+        parts = [f"{row.underlying} {row.pct_of_es95:.0%}"
+                 for row in tops.itertuples()]
+        c.setFont("Helvetica-Bold", 8)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, "Top ES95 drivers")
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(MARGIN + 82, y, "   ·   ".join(parts))
+        y -= 14
+
     # ------------------------------ model diagnostics + bias-test line
     if model is not None:
         parts = [
