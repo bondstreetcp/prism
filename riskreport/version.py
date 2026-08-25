@@ -7,8 +7,8 @@ the git commit count at release; keep it roughly in step (it is informational).
 
 from __future__ import annotations
 
-VERSION = "2.5"
-REVISION = 43          # git commit count at release (informational)
+VERSION = "2.6"
+REVISION = 46          # git commit count at release (informational)
 BUILD_DATE = "2026-08-25"
 
 
@@ -34,6 +34,11 @@ def build_label() -> str:
 # Newest release first. Each entry: (version, date, [bullet, ...]).
 # Only the top entry is highlighted in the splash; older ones are collapsed.
 WHATS_NEW = [
+    ("2.6", "2026-08-25", [
+        "**Factor exposure by sector** (Risk tab) — a heatmap crossing your "
+        "factor bets with sectors, so you see *where* each bet sits (e.g. "
+        "momentum in Tech, value in Financials).",
+    ]),
     ("2.5", "2026-08-25", [
         "**Options skew view** (Options tab) — vega and premium by strike "
         "moneyness (deep-OTM → ITM), so you can see where your *tail* vol "

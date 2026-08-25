@@ -544,6 +544,31 @@ def _render_perf_stats(res):
         st.caption(f"⚠ {m}")
 
 
+def _render_factor_sector(res):
+    """Heatmap of net factor exposure by sector — where the factor bets sit."""
+    fr = getattr(res, "factor_risk", None)
+    if fr is None or getattr(res, "model", None) is None:
+        return
+    from riskreport.factor_sector_map import factor_sector_exposure
+    m = factor_sector_exposure(fr, res.model)
+    if m is None or m.empty:
+        return
+    st.divider()
+    st.subheader("Factor exposure by sector ($M)")
+    st.caption("Net delta-adjusted factor exposure crossed by sector — where "
+               "each factor bet actually sits (e.g. momentum in Tech, value in "
+               "Financials). Red = long the factor, blue = short.")
+    mm = m / 1e6
+    cap = float(mm.abs().to_numpy().max()) or 1.0
+    try:
+        sty = (mm.style.background_gradient(cmap="RdBu_r", axis=None,
+                                            vmin=-cap, vmax=cap)
+               .format("{:+.1f}"))
+        st.dataframe(sty, width="stretch")
+    except Exception:  # any Styler/matplotlib hiccup → plain table
+        st.dataframe(mm.round(1), width="stretch")
+
+
 def render_risk(res):
     """Risk analytics dashboard — VaR, greeks, and the risk decompositions."""
     if res.alert_hits:
@@ -554,6 +579,7 @@ def render_risk(res):
         return
     _render_risk_greeks(res)
     _render_factor_decomp(res)
+    _render_factor_sector(res)
     _render_concentration(res)
     _render_clusters(res)
     _render_liquidity(res)

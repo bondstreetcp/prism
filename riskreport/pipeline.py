@@ -57,6 +57,7 @@ class ReportResult:
     liquidity_cost: object = None  # liquidation cost & liquidity-adjusted VaR
     perf_stats: object = None    # realized risk/drawdown backtest of the book
     risk_clusters: object = None  # correlation-based risk clusters
+    factor_sector: object = None  # sector x factor exposure matrix
     options_ladder: object = None  # options term structure (expiry/theta ladder)
 
 
@@ -311,12 +312,18 @@ def generate_report(
 
     # correlation-based risk clusters (for the AI facts; app has a slider)
     clusters = None
+    factor_sector = None
     if not no_factors and factor_risk is not None and model is not None:
         try:
             from .risk_clusters import risk_clusters as _rc
             clusters = _rc(factor_risk, model, n_clusters=6)
         except Exception as exc:
             log(f"  risk clusters unavailable: {exc}")
+        try:
+            from .factor_sector_map import factor_sector_exposure
+            factor_sector = factor_sector_exposure(factor_risk, model)
+        except Exception as exc:
+            log(f"  factor-sector map unavailable: {exc}")
 
     # concentration / diversification (cheap, from the factor risk decomposition)
     concentration = None
@@ -434,5 +441,5 @@ def generate_report(
         benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
         concentration=concentration, options_ladder=opt_ladder,
         liquidity_cost=liquidity_cost, perf_stats=perf_stats,
-        risk_clusters=clusters,
+        risk_clusters=clusters, factor_sector=factor_sector,
     )

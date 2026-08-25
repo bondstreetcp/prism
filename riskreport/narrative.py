@@ -254,6 +254,18 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "liquidity_adjusted_var95_$M": (round(lq.lvar / 1e6, 2)
                                             if lq.lvar is not None else None),
         })
+    # factor exposure by sector — the largest sector×factor bets
+    fsm = getattr(result, "factor_sector", None)
+    if fsm is not None and not fsm.empty:
+        try:
+            from .factor_sector_map import top_cells
+            cells = top_cells(fsm, n=6)
+            if cells:
+                facts["factor_bets_by_sector_$M"] = [
+                    {"sector": c["sector"], "factor": c["factor"],
+                     "exposure_$M": c["exposure_$M"]} for c in cells]
+        except Exception:
+            pass
     # correlation-based risk clusters (top few by risk share)
     cl = getattr(result, "risk_clusters", None)
     if cl is not None and not cl.table.empty:
