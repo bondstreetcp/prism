@@ -544,6 +544,26 @@ def _render_perf_stats(res):
         st.caption(f"⚠ {m}")
 
 
+def render_risk(res):
+    """Risk analytics dashboard — VaR, greeks, and the risk decompositions."""
+    if res.alert_hits:
+        st.error("⚠ **Risk limit breach(es):**\n\n"
+                 + "\n".join(f"- {x}" for x in res.alert_hits))
+    if res.analytics is None:
+        st.info("Run a report first.")
+        return
+    _render_risk_greeks(res)
+    _render_factor_decomp(res)
+    _render_concentration(res)
+    _render_clusters(res)
+    _render_liquidity(res)
+    _render_perf_stats(res)
+    _render_montecarlo(res)
+    if (getattr(res, "factor_risk", None) is None
+            and (res.summary.get("risk") or {}).get("var_95") is None):
+        st.info("Enable the factor model (sidebar) for the full risk analytics.")
+
+
 def render_report(res):
     if res.alert_hits:
         st.error("⚠ **Risk limit breach(es):**\n\n"
@@ -564,14 +584,8 @@ def render_report(res):
     if summ["coverage"] < 0.999:
         st.caption(f"{basis_label} covers {summ['coverage']:.0%} of gross "
                    "delta-adjusted exposure (names without a beta are excluded).")
-
-    _render_risk_greeks(res)
-    _render_factor_decomp(res)
-    _render_concentration(res)
-    _render_clusters(res)
-    _render_liquidity(res)
-    _render_perf_stats(res)
-    _render_montecarlo(res)
+    st.caption("Detailed risk analytics (VaR, greeks, concentration, clusters, "
+               "liquidity, drawdown, Monte Carlo) are on the **🛡 Risk** tab.")
 
     st.subheader("Exposure breakdown")
     cats = [("By sector", "sector", None), ("By market cap", "cap_bucket", CAP_ORDER),
@@ -1479,13 +1493,15 @@ if result is None:
     st.info("Upload a position CSV in the sidebar and click **Generate report**.")
     st.stop()
 
-(tab_report, tab_trends, tab_scen, tab_pretrade, tab_bench, tab_fi, tab_optladder,
- tab_opt, tab_macro, tab_screen, tab_themes, tab_narr) = st.tabs(
-    ["📄 Report", "📈 Trends", "🌩 Scenarios", "⚖ Pre-trade", "🎯 Benchmark",
-     "🏦 Fixed Income", "🗓 Options", "🛠 Optimizer", "📉 Macro", "🔎 Screener",
-     "🏷 Themes", "🤖 AI"])
+(tab_report, tab_risk, tab_trends, tab_scen, tab_pretrade, tab_bench, tab_fi,
+ tab_optladder, tab_opt, tab_macro, tab_screen, tab_themes, tab_narr) = st.tabs(
+    ["📄 Report", "🛡 Risk", "📈 Trends", "🌩 Scenarios", "⚖ Pre-trade",
+     "🎯 Benchmark", "🏦 Fixed Income", "🗓 Options", "🛠 Optimizer", "📉 Macro",
+     "🔎 Screener", "🏷 Themes", "🤖 AI"])
 with tab_report:
     render_report(result)
+with tab_risk:
+    render_risk(result)
 with tab_trends:
     render_trends()
 with tab_scen:
