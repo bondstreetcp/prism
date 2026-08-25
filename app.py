@@ -364,6 +364,35 @@ def _render_montecarlo(res):
             st.bar_chart(hist_df, x="P&L $M", y="scenarios", height=220)
 
 
+def _render_concentration(res):
+    """Concentration & diversification — is the risk really concentrated?"""
+    fr = getattr(res, "factor_risk", None)
+    if fr is None or getattr(res, "model", None) is None:
+        return
+    from riskreport.concentration import compute_concentration
+    con = compute_concentration(fr, res.model)
+    if con is None:
+        return
+    st.divider()
+    st.subheader("Concentration & diversification")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Effective bets (risk)", f"{con['effective_bets_risk']:.1f}",
+              help="Number of *independent* risk bets the book behaves like "
+                   "(Herfindahl of risk contributions). Far below the issuer "
+                   "count means correlated, concentrated risk.")
+    c2.metric("Issuers held", f"{con['n_issuers']}",
+              help="For contrast with effective bets.")
+    c3.metric("Diversification ratio", f"{con['diversification_ratio']:.2f}×",
+              help="Σ standalone name vol ÷ portfolio vol. >1 means "
+                   "correlations reduce risk; near 1 means little benefit.")
+    c4.metric("Top-5 share of risk", f"{con['top5_risk_share']:.0%}",
+              help="Share of total risk in the 5 largest contributors.")
+    st.caption(f"The book holds {con['n_issuers']} issuers but its risk behaves "
+               f"like ~{con['effective_bets_risk']:.0f} independent bets "
+               f"(exposure-weighted: ~{con['effective_bets_exposure']:.0f}). "
+               "See the risk-contributor tables above for the names.")
+
+
 def render_report(res):
     if res.alert_hits:
         st.error("⚠ **Risk limit breach(es):**\n\n"
@@ -387,6 +416,7 @@ def render_report(res):
 
     _render_risk_greeks(res)
     _render_factor_decomp(res)
+    _render_concentration(res)
     _render_montecarlo(res)
 
     st.subheader("Exposure breakdown")

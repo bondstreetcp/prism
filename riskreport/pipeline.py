@@ -53,6 +53,7 @@ class ReportResult:
     benchmark_risk: object = None  # default-benchmark active risk (TE + MCTE)
     mc_var: object = None        # Monte Carlo VaR (fixed sample)
     macro: object = None         # macro-proxy sensitivities (for the AI facts)
+    concentration: object = None  # concentration/diversification metrics
 
 
 def generate_report(
@@ -304,6 +305,19 @@ def generate_report(
         except Exception as exc:
             log(f"  macro overlay unavailable: {exc}")
 
+    # concentration / diversification (cheap, from the factor risk decomposition)
+    concentration = None
+    if not no_factors and factor_risk is not None and model is not None:
+        try:
+            from .concentration import compute_concentration
+            concentration = compute_concentration(factor_risk, model)
+            if concentration is not None:
+                log(f"Concentration: ~{concentration['effective_bets_risk']:.0f} "
+                    f"effective risk bets across {concentration['n_issuers']} "
+                    "issuers")
+        except Exception as exc:
+            log(f"  concentration unavailable: {exc}")
+
     # Crisis-scenario replays (opt-in: needs a multi-year history fetch)
     scenario_lib: list = []
     if include_scenarios:
@@ -370,4 +384,5 @@ def generate_report(
         factor_attr=factor_attr, factor_returns=factor_returns,
         base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
         benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
+        concentration=concentration,
     )
