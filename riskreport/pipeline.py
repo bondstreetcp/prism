@@ -49,6 +49,7 @@ class ReportResult:
     scenario_lib: list = field(default_factory=list)  # crisis replays (opt-in)
     base_positions: list = field(default_factory=list)  # for pre-trade what-if
     alert_config: object = None  # risk-limit config, for pre-trade checks
+    fi_risk: object = None       # fixed-income (rate) risk of the bond-ETF sleeve
 
 
 def generate_report(
@@ -285,6 +286,17 @@ def generate_report(
         except Exception as exc:
             log(f"  scenario library unavailable: {exc}")
 
+    # fixed-income (rate) risk for the bond-ETF sleeve — cheap, issuer-level
+    fi_risk = None
+    try:
+        from .fixedincome import compute_fi_risk
+        fi_risk = compute_fi_risk(analytics.issuers)
+        if fi_risk is not None:
+            log(f"Fixed-income sleeve: DV01 ${fi_risk.total_dv01/1e3:,.1f}K/bp "
+                f"across {len(fi_risk.holdings)} bond ETF(s)")
+    except Exception as exc:
+        log(f"  fixed-income risk unavailable: {exc}")
+
     snap_written = save_snapshot(analytics, base_dir=snap_dir)
     log(f"Snapshot archived to {snap_written}")
 
@@ -322,5 +334,5 @@ def generate_report(
         stats=stats, closes=closes, profiles=profiles,
         brinson=brinson, scenario_lib=scenario_lib,
         factor_attr=factor_attr, factor_returns=factor_returns,
-        base_positions=parsed.positions, alert_config=cfg,
+        base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
     )

@@ -36,7 +36,8 @@ SYSTEM_PROMPT = (
     "VaR (var_vol_addon vs spot-only); which names drive the expected tail loss "
     "(top_tail_risk_contributors); what attribution says drove return — sector "
     "allocation vs selection (Brinson) and which factor bets paid vs stock-"
-    "specific (factor attribution); crisis-scenario exposures; and "
+    "specific (factor attribution); crisis-scenario exposures; interest-rate "
+    "risk of any bond-ETF sleeve (DV01, dollar duration, +100bp P&L); and "
     "notable liquidity or crowding/squeeze exposures and any limit breaches; then "
     "one or two concrete things to watch. Reference the actual numbers. Be "
     "specific, not generic. Do not invent data. Describe risk and positioning; do "
@@ -214,6 +215,21 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "specific_pnl_$M": round(fa.specific_pnl / 1e6, 2),
             "top_factor_pnl_$M": {str(r.factor): round(r.pnl / 1e6, 2)
                                   for r in top.itertuples()},
+        }
+    # fixed-income (interest-rate) risk of the bond-ETF sleeve
+    fi = getattr(result, "fi_risk", None)
+    if fi is not None:
+        try:
+            p100 = float(fi.scenarios.set_index("scenario")
+                         .loc["+100bp parallel", "pnl"])
+        except Exception:
+            p100 = None
+        facts["fixed_income_rate_risk"] = {
+            "fi_market_value_$M": round(fi.total_mv / 1e6, 1),
+            "dv01_per_1bp_$K": round(fi.total_dv01 / 1e3, 1),
+            "dollar_duration_per_1pct_$M": round(fi.dollar_duration / 1e6, 2),
+            "cs01_per_1bp_$K": round(fi.total_cs01 / 1e3, 1),
+            "pnl_up_100bp_$M": round(p100 / 1e6, 2) if p100 is not None else None,
         }
     # crisis-scenario replays (only when the run included them)
     lib = getattr(result, "scenario_lib", None)

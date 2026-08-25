@@ -953,6 +953,68 @@ def render_pretrade(res):
     st.dataframe(pd.DataFrame(drows), hide_index=True, width="stretch")
 
 
+def render_fixedincome(res):
+    """Interest-rate risk for the bond-ETF sleeve (duration/DV01/key-rate)."""
+    from riskreport.fixedincome import compute_fi_risk, BOND_ETF, BUCKETS
+
+    st.markdown("**Fixed-income risk** — interest-rate and credit-spread risk "
+                "for the bond/rate ETFs in the book, which the equity factor "
+                "model does not capture.")
+    if res.analytics is None:
+        st.info("Run a report first.")
+        return
+    fi = compute_fi_risk(res.analytics.issuers)
+    if fi is None:
+        st.info("No recognised fixed-income ETFs in the book. This tab covers "
+                "Treasury, aggregate, IG/HY credit, TIPS, muni, MBS and EM bond "
+                "ETFs — e.g. TLT, IEF, SHY, AGG, LQD, HYG, TIP, MUB, EMB.")
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("FI market value", _m(fi.total_mv))
+    m2.metric("Total DV01 (/ +1bp)", _kd(fi.total_dv01),
+              help="$ P&L per +1bp parallel rate move. Negative = loses when "
+                   "rates rise (net long duration).")
+    m3.metric("Dollar duration (/ +1%)", _m(fi.dollar_duration),
+              help="$ P&L per +100bp parallel move.")
+    m4.metric("Total CS01 (/ +1bp)", _kd(fi.total_cs01),
+              help="$ P&L per +1bp credit-spread widening (credit ETFs).")
+
+    st.subheader("Key-rate DV01 (curve exposure)")
+    st.caption("$ P&L per +1bp at each point on the curve — the shape of your "
+               "rate exposure, so a steepener/flattener can be priced.")
+    krd = pd.Series({b: fi.krd_dv01[b] for b in BUCKETS}) / 1e3
+    st.bar_chart(krd.rename("DV01 $k / +1bp"), height=220)
+
+    st.subheader("Holdings")
+    h = fi.holdings.copy()
+    disp = pd.DataFrame({
+        "Ticker": h["underlying"],
+        "Type": h["kind"].str.upper(),
+        "Market value": h["mv"].map(_m),
+        "Eff. duration": h["duration"].map(lambda x: f"{x:.1f}"),
+        "DV01 / +1bp": h["dv01"].map(_kd),
+        "CS01 / +1bp": h["cs01"].map(lambda x: _kd(x) if abs(x) > 1e-9 else "—"),
+    })
+    st.dataframe(disp, hide_index=True, width="stretch")
+
+    st.subheader("Rate scenarios")
+    st.caption("Book P&L under parallel shifts and curve twists (duration "
+               "approximation, no convexity).")
+    sc = fi.scenarios.copy()
+    scd = pd.DataFrame({
+        "Scenario": sc["scenario"],
+        "Book P&L": sc["pnl"].map(_m),
+        "% of FI MV": sc["pnl"].map(
+            lambda x: f"{x/fi.total_mv:+.1%}" if fi.total_mv else "—"),
+    })
+    st.dataframe(scd, hide_index=True, width="stretch")
+    st.bar_chart(sc.set_index("scenario")["pnl"] / 1e6, horizontal=True,
+                 height=300)
+    for msg in fi.issues:
+        st.caption(f"⚠ {msg}")
+
+
 def render_macro(res):
     if res.factor_risk is None or res.closes is None:
         st.info("The macro overlay needs the factor model and price history — "
@@ -1138,10 +1200,11 @@ if result is None:
     st.info("Upload a position CSV in the sidebar and click **Generate report**.")
     st.stop()
 
-(tab_report, tab_trends, tab_scen, tab_pretrade, tab_bench, tab_opt, tab_macro,
- tab_screen, tab_themes, tab_narr) = st.tabs(
+(tab_report, tab_trends, tab_scen, tab_pretrade, tab_bench, tab_fi, tab_opt,
+ tab_macro, tab_screen, tab_themes, tab_narr) = st.tabs(
     ["📄 Report", "📈 Trends", "🌩 Scenarios", "⚖ Pre-trade", "🎯 Benchmark",
-     "🛠 Optimizer", "📉 Macro", "🔎 Screener", "🏷 Themes", "🤖 AI"])
+     "🏦 Fixed Income", "🛠 Optimizer", "📉 Macro", "🔎 Screener", "🏷 Themes",
+     "🤖 AI"])
 with tab_report:
     render_report(result)
 with tab_trends:
@@ -1152,6 +1215,8 @@ with tab_pretrade:
     render_pretrade(result)
 with tab_bench:
     render_benchmark(result)
+with tab_fi:
+    render_fixedincome(result)
 with tab_opt:
     render_optimizer(result)
 with tab_macro:
