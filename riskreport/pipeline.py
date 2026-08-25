@@ -43,6 +43,23 @@ class ReportResult:
     stats: dict = field(default_factory=dict)
     closes: object = None      # price history (for macro overlay)
     profiles: dict = field(default_factory=dict)  # for the screener
+    brinson: object = None     # Brinson attribution (PDF + app)
+    factor_attr: object = None  # factor-based return attribution (PDF + app)
+    factor_returns: object = None  # Ken French daily factors (app re-slices windows)
+    scenario_lib: list = field(default_factory=list)  # crisis replays (opt-in)
+    base_positions: list = field(default_factory=list)  # for pre-trade what-if
+    alert_config: object = None  # risk-limit config, for pre-trade checks
+    fi_risk: object = None       # fixed-income (rate) risk of the bond-ETF sleeve
+    benchmark_risk: object = None  # default-benchmark active risk (TE + MCTE)
+    mc_var: object = None        # Monte Carlo VaR (fixed sample)
+    macro: object = None         # macro-proxy sensitivities (for the AI facts)
+    concentration: object = None  # concentration/diversification metrics
+    liquidity_cost: object = None  # liquidation cost & liquidity-adjusted VaR
+    perf_stats: object = None    # realized risk/drawdown backtest of the book
+    risk_clusters: object = None  # correlation-based risk clusters
+    factor_sector: object = None  # sector x factor exposure matrix
+    pnl_curve: object = None      # portfolio P&L curve across market moves
+    options_ladder: object = None  # options term structure (expiry/theta ladder)
 
 
 def generate_report(
@@ -58,6 +75,7 @@ def generate_report(
     alerts_path: str | Path | None = None,
     no_factors: bool = False,
     no_hedge: bool = False,
+    include_scenarios: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> ReportResult:
     log = progress or (lambda _msg: None)
@@ -107,6 +125,11 @@ def generate_report(
             extra |= set(HEDGE_MENU)
         from .macro import MACRO_ETFS
         extra |= set(MACRO_ETFS)
+        # VIX drives the vol-aware VaR (option IV co-shocks with its history)
+        extra.add("^VIX")
+        # SPDR sector ETFs = benchmark sector returns for Brinson attribution
+        from .attribution_brinson import SECTOR_ETFS
+        extra |= set(SECTOR_ETFS)
         fetch_tickers = sorted(set(tickers) | extra)
 
     log(f"Fetching price history for {len(fetch_tickers)} tickers…")
@@ -132,6 +155,7 @@ def generate_report(
     )
 
     factor_risk = scenarios = model = bias = None
+    factor_returns = None
     if not no_factors:
         from .factors import (
             compute_factor_risk, factor_bias_test, fetch_factor_returns,
@@ -163,11 +187,30 @@ def generate_report(
             analytics.positions, closes,
             {t: st.beta for t, st in stats.items()}, asof,
         )
+        def _nn(x):  # NaN -> None for clean JSON snapshots
+            return None if x != x else x
+
         risk_summary = {
-            "var_95": None if scenarios.var_95 != scenarios.var_95 else scenarios.var_95,
-            "var_99": None if scenarios.var_99 != scenarios.var_99 else scenarios.var_99,
-            "es_95": None if scenarios.es_95 != scenarios.es_95 else scenarios.es_95,
+            "var_95": _nn(scenarios.var_95),
+            "var_99": _nn(scenarios.var_99),
+            "es_95": _nn(scenarios.es_95),
+            "var_95_spot": _nn(scenarios.var_95_spot),
+            "var_99_spot": _nn(scenarios.var_99_spot),
+            "es_95_spot": _nn(scenarios.es_95_spot),
+            "vol_aware": scenarios.vol_aware,
         }
+        # portfolio greeks (from the option book) travel with the risk block so
+        # Trends can plot them and the AI narrative can reason about them
+        risk_summary.update(analytics.summary.get("greeks", {}))
+        # top tail-risk contributors (component VaR) — small list for the
+        # snapshot/PDF/AI; the full frame lives on scenarios.risk_contrib
+        if scenarios.risk_contrib is not None:
+            risk_summary["top_contributors"] = [
+                {"ticker": row.underlying, "sector": row.sector,
+                 "contrib_es95": float(row.contrib_es95),
+                 "pct": float(row.pct_of_es95)}
+                for row in scenarios.risk_contrib.head(8).itertuples()
+            ]
         if factor_risk is not None:
             risk_summary.update({
                 "vol_total": factor_risk.vol_total,
@@ -210,6 +253,7 @@ def generate_report(
 
     from .alerts import check_alerts, load_config
     alert_hits: list[str] = []
+    cfg = None
     try:
         cfg = load_config(alerts_path)
         alert_hits = check_alerts(analytics, factor_risk, scenarios, cfg, crowding)
@@ -218,6 +262,153 @@ def generate_report(
                 else "All configured risk limits OK.")
     except Exception as exc:
         log(f"  alerts unavailable: {exc}")
+
+    # Brinson performance attribution (cheap: sector ETFs already fetched)
+    brinson = None
+    factor_attr = None
+    if not no_factors:
+        try:
+            from .attribution_brinson import brinson_attribution
+            brinson = brinson_attribution(analytics.issuers, closes, asof,
+                                          window="3M")
+        except Exception as exc:
+            log(f"  Brinson attribution unavailable: {exc}")
+        try:
+            from .attribution_factor import factor_return_attribution
+            factor_attr = factor_return_attribution(
+                factor_risk, model, closes, factor_returns, analytics.issuers,
+                asof, analytics.summary.get("aum"), window="3M")
+        except Exception as exc:
+            log(f"  factor attribution unavailable: {exc}")
+
+    # Default-benchmark active risk (tracking error + factor/name decomposition)
+    # and Monte Carlo VaR, so the PDF and AI carry them too (app lets the user
+    # pick a different benchmark / sim count interactively).
+    benchmark_risk = mc_var = None
+    if not no_factors and factor_risk is not None and model is not None:
+        try:
+            from .benchmark import active_risk
+            benchmark_risk = active_risk(factor_risk, model, "SPY")
+            log(f"Active risk vs SPY: TE ${benchmark_risk.tracking_error/1e6:,.2f}M")
+        except Exception as exc:
+            log(f"  active risk unavailable: {exc}")
+        try:
+            from .montecarlo import monte_carlo_var
+            mc_var = monte_carlo_var(analytics.positions, model, closes, asof,
+                                     n_sims=10000)
+            if mc_var is not None:
+                log(f"Monte Carlo VaR95 ${mc_var.var_95/1e6:,.2f}M "
+                    f"({mc_var.n_sims:,} sims)")
+        except Exception as exc:
+            log(f"  Monte Carlo VaR unavailable: {exc}")
+
+    # macro-proxy sensitivities (cheap OLS) — carried for the AI narrative
+    macro = None
+    if not no_factors:
+        try:
+            from .macro import compute_macro
+            macro = compute_macro(analytics.positions, closes, asof)
+        except Exception as exc:
+            log(f"  macro overlay unavailable: {exc}")
+
+    # correlation-based risk clusters (for the AI facts; app has a slider)
+    clusters = None
+    factor_sector = None
+    if not no_factors and factor_risk is not None and model is not None:
+        try:
+            from .risk_clusters import risk_clusters as _rc
+            clusters = _rc(factor_risk, model, n_clusters=6)
+        except Exception as exc:
+            log(f"  risk clusters unavailable: {exc}")
+        try:
+            from .factor_sector_map import factor_sector_exposure
+            factor_sector = factor_sector_exposure(factor_risk, model)
+        except Exception as exc:
+            log(f"  factor-sector map unavailable: {exc}")
+
+    # concentration / diversification (cheap, from the factor risk decomposition)
+    concentration = None
+    if not no_factors and factor_risk is not None and model is not None:
+        try:
+            from .concentration import compute_concentration
+            concentration = compute_concentration(factor_risk, model)
+            if concentration is not None:
+                log(f"Concentration: ~{concentration['effective_bets_risk']:.0f} "
+                    f"effective risk bets across {concentration['n_issuers']} "
+                    "issuers")
+        except Exception as exc:
+            log(f"  concentration unavailable: {exc}")
+
+    # Crisis-scenario replays (opt-in: needs a multi-year history fetch)
+    scenario_lib: list = []
+    if include_scenarios:
+        try:
+            from .scenario_library import fetch_long_history, run_library
+            log("Fetching multi-year history for crisis scenarios…")
+            unders = sorted(analytics.positions["underlying"].unique())
+            betas = {t: s.beta for t, s in stats.items()}
+            closes_long = fetch_long_history(unders, asof, cache_dir, log=log)
+            scenario_lib = run_library(analytics.positions, closes_long, betas,
+                                       asof, analytics.summary.get("aum"), log=log)
+            log(f"  ran {len(scenario_lib)} scenarios")
+        except Exception as exc:
+            log(f"  scenario library unavailable: {exc}")
+
+    # portfolio P&L curve across market moves — cheap, reprices the book
+    pnl_curve_res = None
+    if not no_factors:
+        try:
+            from .pnl_curve import pnl_curve as _pc
+            betas = {t: st.beta for t, st in stats.items()}
+            pnl_curve_res = _pc(analytics.positions, betas, closes, asof)
+        except Exception as exc:
+            log(f"  P&L curve unavailable: {exc}")
+
+    # options expiry / theta ladder — cheap, from the per-position greeks
+    opt_ladder = None
+    try:
+        from .options_ladder import options_ladder as _ol
+        opt_ladder = _ol(analytics.positions, asof)
+    except Exception as exc:
+        log(f"  options ladder unavailable: {exc}")
+
+    # realized risk & drawdown backtest of the current book — cheap
+    perf_stats = None
+    try:
+        from .perf_stats import performance_stats
+        perf_stats = performance_stats(
+            analytics.issuers, closes, asof, aum=analytics.summary.get("aum"))
+        if perf_stats is not None:
+            log(f"Realized vol {perf_stats.ann_vol_pct:.1%}, max drawdown "
+                f"{perf_stats.max_drawdown_pct:.1%}")
+    except Exception as exc:
+        log(f"  performance stats unavailable: {exc}")
+
+    # liquidation cost & liquidity-adjusted VaR — cheap, issuer-level
+    liquidity_cost = None
+    try:
+        from .liquidity_cost import liquidation_analysis
+        _liq = analytics.summary.get("liquidity") or {}
+        _v95 = (analytics.summary.get("risk") or {}).get("var_95")
+        liquidity_cost = liquidation_analysis(
+            analytics.issuers, stats, var_95=_v95,
+            days_to_liq_p95=_liq.get("days_to_liq_p95"))
+        if liquidity_cost is not None:
+            log(f"Liquidation cost ${liquidity_cost.total_cost/1e6:,.2f}M "
+                f"({liquidity_cost.cost_pct_gross:.2%} of gross)")
+    except Exception as exc:
+        log(f"  liquidity cost unavailable: {exc}")
+
+    # fixed-income (rate) risk for the bond-ETF sleeve — cheap, issuer-level
+    fi_risk = None
+    try:
+        from .fixedincome import compute_fi_risk
+        fi_risk = compute_fi_risk(analytics.issuers)
+        if fi_risk is not None:
+            log(f"Fixed-income sleeve: DV01 ${fi_risk.total_dv01/1e3:,.1f}K/bp "
+                f"across {len(fi_risk.holdings)} bond ETF(s)")
+    except Exception as exc:
+        log(f"  fixed-income risk unavailable: {exc}")
 
     snap_written = save_snapshot(analytics, base_dir=snap_dir)
     log(f"Snapshot archived to {snap_written}")
@@ -232,6 +423,8 @@ def generate_report(
         alert_hits=alert_hits, crowding=crowding,
         model=model if not no_factors else None,
         bias=bias if not no_factors else None,
+        brinson=brinson, scenario_lib=scenario_lib, factor_attr=factor_attr,
+        fi_risk=fi_risk, benchmark_risk=benchmark_risk, mc_var=mc_var,
     )
 
     s = analytics.summary
@@ -253,4 +446,12 @@ def generate_report(
         analytics=analytics, factor_risk=factor_risk, model=model,
         scenarios=scenarios, hedge=hedge, crowding=crowding_obj, bias=bias,
         stats=stats, closes=closes, profiles=profiles,
+        brinson=brinson, scenario_lib=scenario_lib,
+        factor_attr=factor_attr, factor_returns=factor_returns,
+        base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
+        benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
+        concentration=concentration, options_ladder=opt_ladder,
+        liquidity_cost=liquidity_cost, perf_stats=perf_stats,
+        risk_clusters=clusters, factor_sector=factor_sector,
+        pnl_curve=pnl_curve_res,
     )

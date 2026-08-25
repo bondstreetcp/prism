@@ -196,6 +196,168 @@ FACTOR_LABELS = {
 }
 
 
+def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
+                             factor_attr=None, fi_risk=None,
+                             benchmark_risk=None) -> None:
+    """Page 3+: Brinson + factor attribution + active risk + fixed income +
+    crisis scenarios.
+
+    Sections flow onto continuation pages when a single page fills up.
+    """
+    import math
+
+    def pf(x, dp=1):
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return "n/a"
+        return f"{x:+.{dp}%}"
+
+    def _k(v):
+        return f"{v/1e3:+,.1f}K"
+
+    def _page_header(title):
+        yy = PAGE_H - MARGIN
+        c.setFillColor(HexColor(INK))
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(MARGIN, yy - 14, title)
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawRightString(PAGE_W - MARGIN, yy - 8,
+                          f"As of {analytics.asof:%B %d, %Y}")
+        c.drawRightString(PAGE_W - MARGIN, yy - 18, "Internal use only")
+        c.setStrokeColor(HexColor(BASELINE))
+        c.setLineWidth(0.8)
+        c.line(MARGIN, yy - 24, PAGE_W - MARGIN, yy - 24)
+        return yy - 36
+
+    state = {"y": _page_header(f"Performance Attribution & Scenarios — {name}")}
+
+    def section(title, blurb_lines, table):
+        w, h = table.wrapOn(c, CONTENT_W, PAGE_H) if table is not None else (0, 0)
+        needed = 13 + 11 * len(blurb_lines) + 5 + h + 14
+        if state["y"] - needed < MARGIN + 6:
+            c.showPage()
+            state["y"] = _page_header(
+                "Performance Attribution & Scenarios (cont.)")
+        y = state["y"]
+        c.setFont("Helvetica-Bold", 10)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, title)
+        y -= 13
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        for line in blurb_lines:
+            c.drawString(MARGIN, y, line)
+            y -= 11
+        y -= 5
+        if table is not None:
+            y -= _draw_table(c, table, MARGIN, y) + 14
+        state["y"] = y
+
+    # ---------------------------------------------- Brinson attribution
+    if brinson is not None:
+        b = brinson
+        rows = [["Sector", "Wt P", "Wt B", "Ret P", "Ret B",
+                 "Alloc", "Selec", "Total"]]
+        for r in b.table.itertuples():
+            rows.append([
+                str(r.sector)[:22], f"{r.w_port:.0%}", f"{r.w_bench:.0%}",
+                pf(r.r_port), pf(r.r_bench), pf(r.allocation, 2),
+                pf(r.selection, 2), pf(r.total, 2),
+            ])
+        rows.append(["Total", "", "", pf(b.r_port), pf(b.r_bench),
+                     pf(b.allocation, 2), pf(b.selection, 2), pf(b.active, 2)])
+        section(
+            "Brinson-Fachler attribution vs S&P 500",
+            [f"Current holdings {b.start} to {b.end}  ·  portfolio "
+             f"{pf(b.r_port)}  vs benchmark {pf(b.r_bench)}  ·  active "
+             f"{pf(b.active, 2)}",
+             f"Allocation {pf(b.allocation, 2)}   ·   Selection "
+             f"{pf(b.selection, 2)}   ·   Interaction {pf(b.interaction, 2)}"
+             f"   ·   coverage {b.coverage:.0%}"],
+            _table(rows, [116, 40, 40, 46, 46, 50, 50, 50]))
+
+    # ---------------------------------------------- factor return attribution
+    if factor_attr is not None:
+        fa = factor_attr
+        rows = [["Factor", "Net exp $M", "Factor ret", "P&L $M"]]
+        ft = fa.table.reindex(
+            fa.table["pnl"].abs().sort_values(ascending=False).index)
+        for r in ft.itertuples():
+            rows.append([str(r.factor)[:16], _m(r.exposure), pf(r.factor_return),
+                         _m(r.pnl)])
+        rows.append(["Specific", "", "", _m(fa.specific_pnl)])
+        rows.append(["Total (realized)", "", "", _m(fa.realized_pnl)])
+        section(
+            "Factor-based return attribution",
+            [f"Realized book P&L {fa.start} to {fa.end}: {_m(fa.realized_pnl)}M"
+             f"  =  factors {_m(fa.factor_pnl)}M  +  specific "
+             f"{_m(fa.specific_pnl)}M"],
+            _table(rows, [140, 70, 60, 60]))
+
+    # ---------------------------------------------- active risk vs the S&P 500
+    if benchmark_risk is not None:
+        br = benchmark_risk
+        afc = br.active_factor_contrib
+        top = afc.reindex(afc.abs().sort_values(ascending=False).index)
+        rows = [["Active factor", "% of TE var"]]
+        for kf, v in top.items():
+            rows.append([str(kf)[:20], f"{v*100:+.0f}%"])
+        rows.append(["Stock-specific", f"{br.active_specific_share*100:+.0f}%"])
+        section(
+            "Active risk vs S&P 500 — factor drivers",
+            [f"Tracking error {_m(br.tracking_error)}M "
+             f"({br.te_pct:.1%} of notional)  ·  beta to benchmark "
+             f"{br.beta_to_benchmark:.2f}  ·  benchmark beta-matched to the "
+             "book's market exposure"],
+            _table(rows, [150, 90]))
+        pac = getattr(br, "position_active_contrib", None)
+        if pac is not None and not pac.empty:
+            nrows = [["Name", "% of TE", "Contrib $M"]]
+            for r in pac.head(10).itertuples():
+                nrows.append([str(r.underlying)[:16], f"{r.pct_of_te:+.0%}",
+                              _m(r.ctr_te)])
+            section("Active risk — names driving tracking error", [],
+                    _table(nrows, [140, 60, 70]))
+
+    # ---------------------------------------------- fixed-income (rate) risk
+    if fi_risk is not None:
+        fi = fi_risk
+        krd = fi.krd_dv01
+        rows = [["Holding", "Type", "MV $M", "Dur", "DV01 $K/bp"]]
+        for r in fi.holdings.itertuples():
+            rows.append([str(r.underlying)[:10], str(r.kind).upper(),
+                         _m(r.mv), f"{r.duration:.1f}", f"{r.dv01/1e3:+.1f}"])
+        section(
+            "Fixed-income (rate) risk",
+            [f"FI market value {_m(fi.total_mv)}M  ·  DV01 {_k(fi.total_dv01)}/bp"
+             f"  ·  dollar duration {_m(fi.dollar_duration)}M/+1%  ·  CS01 "
+             f"{_k(fi.total_cs01)}/bp",
+             f"Key-rate DV01 ($K/+1bp):  2y {krd['2y']/1e3:+.1f}   "
+             f"5y {krd['5y']/1e3:+.1f}   10y {krd['10y']/1e3:+.1f}   "
+             f"30y {krd['30y']/1e3:+.1f}"],
+            _table(rows, [90, 66, 60, 44, 70]))
+        srows = [["Rate scenario", "Book P&L $M"]]
+        for s in fi.scenarios.itertuples():
+            srows.append([str(s.scenario)[:28], _m(s.pnl)])
+        section("Fixed-income rate scenarios (duration approx.)", [],
+                _table(srows, [170, 90]))
+
+    # ---------------------------------------------- crisis scenarios
+    if scenario_lib:
+        rows = [["Scenario", "S&P", "VIX", "Book P&L $M", "% AUM"]]
+        for s in scenario_lib:
+            rows.append([
+                str(s.name)[:34], pf(s.spx_move), pf(s.vix_move),
+                _m(s.pnl), pf(s.pnl_pct_aum),
+            ])
+        section(
+            "Crisis-scenario replays",
+            ["Today's book repriced through historical crises and hypothetical "
+             "shocks (full option revaluation, IV shocked by the episode's VIX). "
+             "Instantaneous shock; post-window names proxied via beta x S&P."],
+            _table(rows, [190, 52, 52, 72, 56]))
+
+
 def render_tearsheet(
     analytics: PortfolioAnalytics,
     name: str,
@@ -207,6 +369,12 @@ def render_tearsheet(
     crowding=None,
     model=None,
     bias=None,
+    brinson=None,
+    scenario_lib=None,
+    factor_attr=None,
+    fi_risk=None,
+    benchmark_risk=None,
+    mc_var=None,
 ) -> Path:
     a = analytics
     s = a.summary
@@ -434,7 +602,14 @@ def render_tearsheet(
     # risk page whenever either exists rather than dropping computed numbers
     if factor_risk is not None or scenarios is not None:
         _render_risk_page(c, analytics, name, factor_risk, scenarios, hedge,
-                          model, bias)
+                          model, bias, mc_var)
+        c.showPage()
+
+    # page 3+: attribution (Brinson + factor) + fixed income + crisis scenarios
+    if (brinson is not None or scenario_lib or factor_attr is not None
+            or fi_risk is not None or benchmark_risk is not None):
+        _render_attribution_page(c, analytics, name, brinson, scenario_lib,
+                                 factor_attr, fi_risk, benchmark_risk)
         c.showPage()
 
     c.save()
@@ -716,7 +891,7 @@ def render_attribution(result, name: str, out_path: str | Path) -> Path:
 
 
 def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
-                      bias=None) -> None:
+                      bias=None, mc=None) -> None:
     """Page 2: factor model, predicted vol, stress grid, VaR."""
     import math
 
@@ -762,11 +937,23 @@ def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
         return _pct(x / gross)
 
     if sc is not None:
+        vol_aware = getattr(sc, "vol_aware", False)
+        method = "vol-aware" if vol_aware else "hist-sim, spot-only"
         var_rows = [
-            ["Value at Risk (1-day, hist-sim)", "$M", "% Gross"],
+            [f"Value at Risk (1-day, {method})", "$M", "% Gross"],
             ["VaR 95%", _v(sc.var_95), _vp(sc.var_95)],
             ["VaR 99%", _v(sc.var_99), _vp(sc.var_99)],
             ["Expected shortfall 95%", _v(sc.es_95), _vp(sc.es_95)],
+        ]
+        if vol_aware and sc.var_95_spot == sc.var_95_spot:
+            var_rows.append(
+                ["  vol add-on to VaR95", _v(sc.var_95 - sc.var_95_spot), ""])
+        if mc is not None:
+            var_rows.append([f"Monte Carlo VaR95 ({mc.n_sims//1000}k sims)",
+                             _v(mc.var_95), _vp(mc.var_95)])
+            var_rows.append(["  Monte Carlo VaR99", _v(mc.var_99),
+                             _vp(mc.var_99)])
+        var_rows += [
             [f"Worst day in window ({sc.worst_date})", _v(-sc.pnl_worst if sc.pnl_worst == sc.pnl_worst else float('nan')), ""],
             [f"Scenario days used", f"{sc.var_obs}", ""],
         ]
@@ -781,6 +968,42 @@ def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
     h1 = _draw_table(c, t1, MARGIN, y)
     h2 = _draw_table(c, t2, MARGIN + 240, y)
     y -= max(h1, h2) + 10
+
+    # ------------------------------ book greeks (option risk) strip
+    g = s.get("greeks") or {}
+    if g:
+        def _kd(v):
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                return "n/a"
+            k = v / 1e3
+            return f"(${abs(k):,.0f}k)" if k < 0 else f"${k:,.0f}k"
+        c.setFont("Helvetica-Bold", 8)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, "Book greeks")
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(
+            MARGIN + 52, y,
+            f"Net Δ {_m(g.get('net_delta', 0))}M   ·   "
+            f"Net Γ (P&L per ±1%) {_kd(g.get('net_gamma_1pct'))}   ·   "
+            f"Net vega (per +1 vol pt) {_kd(g.get('net_vega_1pt'))}   ·   "
+            f"Net θ (per day) {_kd(g.get('net_theta_day'))}",
+        )
+        y -= 14
+
+    # ------------------------------ top tail-risk drivers (component VaR)
+    rc = getattr(sc, "risk_contrib", None) if sc is not None else None
+    if rc is not None and not rc.empty:
+        tops = rc.head(6)
+        parts = [f"{row.underlying} {row.pct_of_es95:.0%}"
+                 for row in tops.itertuples()]
+        c.setFont("Helvetica-Bold", 8)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, "Top ES95 drivers")
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(MARGIN + 82, y, "   ·   ".join(parts))
+        y -= 14
 
     # ------------------------------ model diagnostics + bias-test line
     if model is not None:

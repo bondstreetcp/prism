@@ -31,17 +31,42 @@ SYSTEM_PROMPT = (
     "in $M unless a key says otherwise). Write a tight risk commentary a PM would "
     "actually read: headline positioning (net/gross, market direction, biggest "
     "factor and sector tilts); what drives predicted risk and where concentration "
-    "sits; notable tail/scenario, liquidity, or crowding/squeeze exposures and any "
-    "limit breaches; and one or two concrete things to watch. Reference the actual "
-    "numbers. Be specific, not generic. Do not invent data. Describe risk and "
-    "positioning; do not give buy/sell investment advice. Write prose, 3-5 short "
-    "paragraphs."
+    "sits; how realized risk compares to predicted (trailing-1y realized vol vs "
+    "predicted vol, max drawdown, realized vs model VaR); concentration "
+    "(effective number of risk bets vs issuers held, "
+    "diversification ratio, top-5 share of risk, and the correlated risk "
+    "clusters / implicit thematic bets); the option-greek profile "
+    "(net gamma/vega/theta — a short-premium book is short gamma, short vega, "
+    "long theta), the options term structure (how much theta income and gamma "
+    "risk sit in near-dated <30d expiries), and how much implied-vol moves add to "
+    "VaR (the vol add-on vs spot-only) plus the Monte Carlo VaR cross-check; which "
+    "names drive the expected tail loss; active risk "
+    "vs the S&P (tracking error, which factor bets and which names drive it); "
+    "what attribution says drove return — sector "
+    "allocation vs selection (Brinson) and which factor bets paid vs stock-"
+    "specific (factor attribution); crisis-scenario exposures; interest-rate "
+    "risk of any bond-ETF sleeve (DV01, dollar duration, +100bp P&L); macro "
+    "sensitivities (rates/credit/oil/USD/gold betas); and "
+    "notable liquidity (days-to-liquidate, estimated liquidation cost and the "
+    "liquidity-adjusted VaR) or crowding/squeeze exposures and any limit "
+    "breaches; then "
+    "one or two concrete things to watch. Reference the actual numbers. Be "
+    "specific, not generic. Do not invent data. Describe risk and positioning; do "
+    "not give buy/sell investment advice. Write prose, 3-5 short paragraphs."
 )
 
 CHAT_SYSTEM_PROMPT = (
     "You are a buy-side risk analyst chatting with the PM about their book. You "
     "have a JSON risk snapshot and a reference table of factor loadings for a menu "
-    "of liquid hedge ETFs. Answer the PM's questions grounded in these numbers. "
+    "of liquid hedge ETFs. The snapshot may include option greeks (net gamma/vega/"
+    "theta), vol-aware VaR (with the vol add-on vs spot-only), component VaR (each "
+    "name's share of expected tail loss), Brinson performance attribution "
+    "(allocation vs selection vs the S&P), factor-based return attribution "
+    "(factor P&L vs stock-specific), active risk vs the S&P (tracking error and "
+    "its drivers), Monte Carlo VaR, fixed-income rate risk (DV01/duration), and "
+    "macro sensitivities (rates/credit/oil/USD/gold betas), and crisis-scenario "
+    "P&L. Use them when relevant. Answer the PM's questions grounded in these "
+    "numbers. "
     "When they ask how to change an exposure (e.g. reduce net short momentum), "
     "reason from the factor loadings: name specific instruments and rough dollar "
     "sizes that would move the exposure the right way, and point out side effects "
@@ -89,6 +114,10 @@ def _complete(messages, api_key, model, base_url, max_tokens, temperature=0.4):
 # ----------------------------------------------------------------------
 def build_facts(result, benchmark=None, macro=None) -> dict:
     """Compact, model-friendly facts dict from a ReportResult."""
+    # the pipeline can attach the macro overlay to the result; use it when the
+    # caller didn't pass one so the AI sees macro betas even in the app path
+    if macro is None:
+        macro = getattr(result, "macro", None)
     s = result.summary
     facts: dict = {
         "as_of": str(result.asof),
@@ -114,16 +143,37 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             k: round(v / 1e6, 1) for k, v in (risk.get("factor_exposures_net") or {}).items()
         }
     if risk.get("var_95") is not None:
-        facts["var_1d_95_$M"] = round(risk["var_95"] / 1e6, 2)
-        facts["var_1d_99_$M"] = round(risk["var_99"] / 1e6, 2)
+        # all 1-day VaR figures live in one block (Monte Carlo added below)
+        var = {"hist_sim_95": round(risk["var_95"] / 1e6, 2),
+               "hist_sim_99": round(risk["var_99"] / 1e6, 2)}
+        if risk.get("var_95_spot") is not None:
+            var["spot_only_95"] = round(risk["var_95_spot"] / 1e6, 2)
+            var["vol_addon_95"] = round(
+                (risk["var_95"] - risk["var_95_spot"]) / 1e6, 2)
+            var["vol_aware"] = bool(risk.get("vol_aware"))
+        facts["value_at_risk_1d_$M"] = var
+    # option greeks (dollar terms) — a short-premium book reads short gamma,
+    # short vega, long theta
+    if risk.get("net_vega_1pt") is not None:
+        facts["option_greeks"] = {
+            "net_delta_$M": round(risk.get("net_delta", 0) / 1e6, 1),
+            "net_gamma_pnl_per_1pct_$K": round(risk.get("net_gamma_1pct", 0) / 1e3, 1),
+            "net_vega_per_+1volpt_$K": round(risk.get("net_vega_1pt", 0) / 1e3, 1),
+            "net_theta_per_day_$K": round(risk.get("net_theta_day", 0) / 1e3, 1),
+        }
+    # component VaR: which names drive the expected tail loss (share of ES95)
+    if risk.get("top_contributors"):
+        facts["top_tail_risk_contributors_pct_of_ES95"] = {
+            c["ticker"]: round(c["pct"], 3) for c in risk["top_contributors"][:5]
+        }
+    # sector & market-cap net exposure (region dropped — lowest signal)
     for tbl, key in [("sector_table", "by_sector_net_$M"),
-                     ("cap_table", "by_market_cap_net_$M"),
-                     ("region_table", "by_region_net_$M")]:
+                     ("cap_table", "by_market_cap_net_$M")]:
         t = getattr(result.analytics, tbl, None)
         if t is not None and len(t):
             col = t.columns[0]
             facts[key] = {str(r[col]): round(r["net"] / 1e6, 1)
-                          for _, r in t.head(8).iterrows()}
+                          for _, r in t.head(6).iterrows()}
     liq = s.get("liquidity") or {}
     if liq:
         facts["liquidity"] = {
@@ -156,6 +206,158 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
         facts["macro_betas_$K_per_1pct_move"] = {
             r["factor"]: round(r["beta_per_1pct"] / 1e3, 1)
             for _, r in macro.betas.iterrows()
+        }
+    # Brinson performance attribution vs the S&P 500 (from the pipeline's 3M run)
+    br = getattr(result, "brinson", None)
+    if br is not None:
+        top = br.table.reindex(
+            br.table["total"].abs().sort_values(ascending=False).index).head(4)
+        facts["performance_attribution_vs_sp500"] = {
+            "window": f"{br.start}..{br.end}",
+            "active_return_pct": round(br.active * 100, 2),
+            "allocation_pct": round(br.allocation * 100, 2),
+            "selection_pct": round(br.selection * 100, 2),
+            "interaction_pct": round(br.interaction * 100, 2),
+            "top_sector_contributions_pct": {
+                str(r.sector): round(r.total * 100, 2) for r in top.itertuples()
+            },
+        }
+    # factor-based (Barra) return attribution
+    fa = getattr(result, "factor_attr", None)
+    if fa is not None:
+        top = fa.table.reindex(
+            fa.table["pnl"].abs().sort_values(ascending=False).index).head(4)
+        facts["factor_return_attribution"] = {
+            "window": f"{fa.start}..{fa.end}",
+            "realized_pnl_$M": round(fa.realized_pnl / 1e6, 2),
+            "factor_pnl_$M": round(fa.factor_pnl / 1e6, 2),
+            "specific_pnl_$M": round(fa.specific_pnl / 1e6, 2),
+            "top_factor_pnl_$M": {str(r.factor): round(r.pnl / 1e6, 2)
+                                  for r in top.itertuples()},
+        }
+    # realized risk & drawdown (current-holdings backtest, trailing ~1y)
+    ps = getattr(result, "perf_stats", None)
+    if ps is not None:
+        facts["realized_backtest_1y"] = {
+            "realized_vol_ann_$M": round(ps.ann_vol / 1e6, 2),
+            "realized_vol_pct": round(ps.ann_vol_pct, 3),
+            "max_drawdown_pct": round(ps.max_drawdown_pct, 3),
+            "realized_1d_var95_$M": round(ps.realized_var95 / 1e6, 2),
+            "window_return_pct": round(ps.window_return_pct, 3),
+        }
+    # liquidation cost & liquidity-adjusted VaR
+    lq = getattr(result, "liquidity_cost", None)
+    if lq is not None:
+        facts["liquidity"] = facts.get("liquidity") or {}
+        facts["liquidity"].update({
+            "est_liquidation_cost_$M": round(lq.total_cost / 1e6, 2),
+            "liquidation_cost_pct_gross": round(lq.cost_pct_gross, 4),
+            "liquidity_adjusted_var95_$M": (round(lq.lvar / 1e6, 2)
+                                            if lq.lvar is not None else None),
+        })
+    # portfolio P&L curve — book P&L at key market moves (payoff shape)
+    pc = getattr(result, "pnl_curve", None)
+    if pc is not None:
+        facts["pnl_curve_$M"] = {
+            "at_down_20pct": round(pc.pnl_down20 / 1e6, 2),
+            "at_down_10pct": round(pc.pnl_down10 / 1e6, 2),
+            "at_up_10pct": round(pc.pnl_up10 / 1e6, 2),
+            "worst_in_+-30pct": round(pc.worst_loss / 1e6, 2),
+        }
+    # factor exposure by sector — the largest sector×factor bets
+    fsm = getattr(result, "factor_sector", None)
+    if fsm is not None and not fsm.empty:
+        try:
+            from .factor_sector_map import top_cells
+            cells = top_cells(fsm, n=4)
+            if cells:
+                facts["factor_bets_by_sector_$M"] = [
+                    {"sector": c["sector"], "factor": c["factor"],
+                     "exposure_$M": c["exposure_$M"]} for c in cells]
+        except Exception:
+            pass
+    # correlation-based risk clusters (top few by risk share)
+    cl = getattr(result, "risk_clusters", None)
+    if cl is not None and not cl.table.empty:
+        facts["risk_clusters"] = [
+            {"dominant_sector": str(r.dominant_sector),
+             "top_members": str(r.top_members),
+             "risk_share": round(float(r.risk_share), 3),
+             "avg_corr": (round(float(r.avg_corr), 2)
+                          if r.avg_corr == r.avg_corr else None)}
+            for r in cl.table.head(4).itertuples()
+        ]
+    # concentration / diversification
+    con = getattr(result, "concentration", None)
+    if con is not None:
+        facts["concentration"] = {
+            "issuers_held": con["n_issuers"],
+            "effective_risk_bets": round(con["effective_bets_risk"], 1),
+            "diversification_ratio": round(con["diversification_ratio"], 2),
+            "top5_share_of_risk": round(con["top5_risk_share"], 3),
+        }
+    # options term structure (expiry / theta ladder)
+    lad = getattr(result, "options_ladder", None)
+    if lad is not None:
+        facts["options_term_structure"] = {
+            "net_premium_$M": round(lad.net_premium / 1e6, 2),
+            "theta_per_day_$K": round(lad.total_theta_day / 1e3, 1),
+            "vega_per_+1volpt_$K": round(lad.total_vega_1pt / 1e3, 1),
+            "pct_theta_within_30d": round(lad.near_theta_share, 2),
+            "pct_gamma_risk_within_30d": round(lad.near_gamma_share, 2),
+            "deep_otm_put_vega_$K_tail_vol": round(
+                getattr(lad, "deep_otm_put_vega", 0) / 1e3, 1),
+        }
+    # Monte Carlo VaR (parametric) — folded into the VaR block for one view
+    mc = getattr(result, "mc_var", None)
+    if mc is not None:
+        facts.setdefault("value_at_risk_1d_$M", {}).update({
+            "monte_carlo_95": round(mc.var_95 / 1e6, 2),
+            "monte_carlo_99": round(mc.var_99 / 1e6, 2),
+            "monte_carlo_es95": round(mc.es_95 / 1e6, 2),
+        })
+    # active risk vs the S&P 500 (tracking error + its factor / name drivers)
+    br = getattr(result, "benchmark_risk", None)
+    if br is not None:
+        afc = br.active_factor_contrib
+        top_fac = afc.reindex(afc.abs().sort_values(ascending=False).index).head(5)
+        blk = {
+            "tracking_error_$M": round(br.tracking_error / 1e6, 2),
+            "te_pct_of_notional": round(br.te_pct, 4),
+            "beta_to_benchmark": round(br.beta_to_benchmark, 2),
+            "active_specific_share": round(br.active_specific_share, 2),
+            "top_active_factor_contrib_pct_of_var": {
+                str(k): round(float(v) * 100, 1) for k, v in top_fac.items()},
+        }
+        pac = getattr(br, "position_active_contrib", None)
+        if pac is not None and not pac.empty:
+            held = pac[~pac["underlying"].astype(str).str.startswith("[benchmark")]
+            blk["top_names_driving_TE_pct"] = {
+                str(r.underlying): round(float(r.pct_of_te) * 100, 1)
+                for r in held.head(6).itertuples()}
+        facts["active_risk_vs_sp500"] = blk
+    # fixed-income (interest-rate) risk of the bond-ETF sleeve
+    fi = getattr(result, "fi_risk", None)
+    if fi is not None:
+        try:
+            p100 = float(fi.scenarios.set_index("scenario")
+                         .loc["+100bp parallel", "pnl"])
+        except Exception:
+            p100 = None
+        facts["fixed_income_rate_risk"] = {
+            "fi_market_value_$M": round(fi.total_mv / 1e6, 1),
+            "dv01_per_1bp_$K": round(fi.total_dv01 / 1e3, 1),
+            "dollar_duration_per_1pct_$M": round(fi.dollar_duration / 1e6, 2),
+            "cs01_per_1bp_$K": round(fi.total_cs01 / 1e3, 1),
+            "pnl_up_100bp_$M": round(p100 / 1e6, 2) if p100 is not None else None,
+        }
+    # crisis-scenario replays (only when the run included them)
+    lib = getattr(result, "scenario_lib", None)
+    if lib:
+        facts["crisis_scenario_book_pnl_pct_aum"] = {
+            r.name: (round(r.pnl_pct_aum * 100, 1)
+                     if r.pnl_pct_aum is not None else None)
+            for r in lib
         }
     if result.alert_hits:
         facts["limit_breaches"] = result.alert_hits

@@ -68,6 +68,41 @@ def bs_price_delta(
     return price, delta
 
 
+def bs_greeks(
+    spot: float, strike: float, t_years: float, iv: float, cp: str,
+    rate: float = RISK_FREE_RATE,
+) -> tuple[float, float, float, float, float]:
+    """Black-Scholes price and per-share greeks (q=0).
+
+    Returns (price, delta, gamma, vega, theta) where:
+      * gamma  = d(delta)/d(spot)          — per $1 of spot
+      * vega   = d(price)/d(sigma)         — per 1.00 of vol (×0.01 = per vol pt)
+      * theta  = d(price)/d(time)          — per YEAR (÷365 = per calendar day)
+    At/after expiry (or degenerate inputs) gamma/vega/theta are zero and price/
+    delta fall back to intrinsic.
+    """
+    if t_years <= 0 or iv <= 0 or spot <= 0 or strike <= 0:
+        price, delta = bs_price_delta(spot, strike, t_years, iv, cp, rate)
+        return price, delta, 0.0, 0.0, 0.0
+    sqt = math.sqrt(t_years)
+    sq = iv * sqt
+    d1 = (math.log(spot / strike) + (rate + 0.5 * iv * iv) * t_years) / sq
+    d2 = d1 - sq
+    pdf = norm.pdf(d1)
+    disc = math.exp(-rate * t_years)
+    gamma = pdf / (spot * sq)
+    vega = spot * pdf * sqt
+    if cp == "C":
+        price = spot * norm.cdf(d1) - strike * disc * norm.cdf(d2)
+        delta = norm.cdf(d1)
+        theta = -(spot * pdf * iv) / (2.0 * sqt) - rate * strike * disc * norm.cdf(d2)
+    else:
+        price = strike * disc * norm.cdf(-d2) - spot * norm.cdf(-d1)
+        delta = norm.cdf(d1) - 1.0
+        theta = -(spot * pdf * iv) / (2.0 * sqt) + rate * strike * disc * norm.cdf(-d2)
+    return price, delta, gamma, vega, theta
+
+
 @dataclass
 class PortfolioAnalytics:
     asof: date
@@ -209,6 +244,11 @@ def build_analytics(
         profile = profiles.get(p.underlying, {})
         beta = st.beta
 
+        # dollar greeks (option positions only; equities carry delta only)
+        gamma_pnl_1pct = 0.0   # convexity P&L from a ±1% underlying move
+        vega_dollar = 0.0      # P&L per +1 vol point (0.01 change in IV)
+        theta_dollar = 0.0     # P&L per calendar day
+
         if p.kind == "equity":
             mv = p.qty * st.spot
             exposure = mv
@@ -223,7 +263,12 @@ def build_analytics(
             if iv is None or not (IV_SANITY[0] <= iv <= IV_SANITY[1]):
                 iv = st.realized_vol if st.realized_vol else DEFAULT_IV
                 iv_fallbacks += 1
-            theo, delta = bs_price_delta(st.spot, p.strike, t_years, iv, p.cp)
+            theo, delta, gamma, vega, theta = bs_greeks(
+                st.spot, p.strike, t_years, iv, p.cp)
+            signed_shares = p.qty * p.multiplier   # signed contract → share count
+            gamma_pnl_1pct = 0.5 * (signed_shares * gamma) * (0.01 * st.spot) ** 2
+            vega_dollar = signed_shares * vega * 0.01
+            theta_dollar = signed_shares * (theta / 365.0)
 
             bid, ask = quote.get("bid"), quote.get("ask")
             if bid is not None and ask is not None and ask > 0 and ask >= bid:
@@ -249,6 +294,7 @@ def build_analytics(
                 "underlying": p.underlying,
                 "kind": p.kind,
                 "qty": p.qty,
+                "multiplier": p.multiplier,
                 "spot": st.spot,
                 "expiry": p.expiry,
                 "strike": p.strike,
@@ -260,6 +306,9 @@ def build_analytics(
                 "mv": mv,
                 "exposure": exposure,
                 "delta_shares": delta_shares,
+                "gamma_pnl_1pct": gamma_pnl_1pct,
+                "vega_dollar": vega_dollar,
+                "theta_dollar": theta_dollar,
                 "adv_shares": st.adv_shares,
                 "spot_date": st.spot_date,
                 "beta": beta,
@@ -407,6 +456,20 @@ def build_analytics(
         "opt_exp_net": float(opts["exposure"].sum()),
         "eq_exp_gross": float(eq["exposure"].abs().sum()),
         "eq_exp_net": float(eq["exposure"].sum()),
+    }
+
+    # ------------------------------------------------------------------
+    # Portfolio greeks (dollar terms). Delta = delta-adjusted net exposure;
+    # gamma/vega/theta come from the option book. A short-premium book reads
+    # as short gamma (neg), short vega (neg), long theta (pos).
+    # ------------------------------------------------------------------
+    summary["greeks"] = {
+        "net_delta": summary["exp_net"],
+        "net_gamma_1pct": float(df["gamma_pnl_1pct"].sum()),
+        "net_vega_1pt": float(df["vega_dollar"].sum()),
+        "net_theta_day": float(df["theta_dollar"].sum()),
+        "gross_vega_1pt": float(df["vega_dollar"].abs().sum()),
+        "opt_delta_net": float(opts["exposure"].sum()),
     }
 
     # ------------------------------------------------------------------

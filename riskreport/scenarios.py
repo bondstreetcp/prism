@@ -51,22 +51,32 @@ def _reval_position(row, new_spot: float, iv_scale: float, asof: date) -> float:
     if row.kind == "equity":
         return row.qty * (new_spot - row.spot)
     t_years = (row.expiry - asof).days / 365.0
-    iv = (row.iv if row.iv and np.isfinite(row.iv) else DEFAULT_IV) * iv_scale
-    base_price, _ = bs_price_delta(row.spot, row.strike, t_years, row.iv or DEFAULT_IV, row.cp)
+    base_iv = row.iv if row.iv and np.isfinite(row.iv) else DEFAULT_IV
+    iv = base_iv * iv_scale
+    base_price, _ = bs_price_delta(row.spot, row.strike, t_years, base_iv, row.cp)
     new_price, _ = bs_price_delta(new_spot, row.strike, t_years, iv, row.cp)
-    return row.qty * 100.0 * (new_price - base_price)
+    mult = getattr(row, "multiplier", 100) or 100
+    return row.qty * mult * (new_price - base_price)
 
 
 @dataclass
 class ScenarioResults:
     stress_grid: pd.DataFrame  # index=vol shock label, cols=market move label
-    var_95: float  # 1-day, positive number = loss
+    var_95: float  # 1-day, positive number = loss (vol-aware when available)
     var_99: float
     es_95: float  # expected shortfall beyond VaR95
     var_obs: int
     pnl_best: float
     pnl_worst: float
     worst_date: str
+    # spot-only comparison (IV held constant) — the delta to the headline VaR
+    # is the contribution of the historical vol move (short-vega/gamma risk)
+    var_95_spot: float = float("nan")
+    var_99_spot: float = float("nan")
+    es_95_spot: float = float("nan")
+    vol_aware: bool = False
+    # per-underlying tail-risk decomposition (contribution to ES95); sums to es_95
+    risk_contrib: pd.DataFrame | None = None
     issues: list[str] = field(default_factory=list)
 
 
@@ -140,27 +150,103 @@ def run_scenarios(
         )
 
     r = r.fillna(0.0)
-    pnl = np.zeros(obs)
+
+    # ---- vol path: on each historical day, scale option IV by that day's
+    # actual VIX move. In a historical sim this is the faithful co-shock — a
+    # 2020-03 style crash applies BOTH the spot crash and the vol spike, so a
+    # short-premium book shows its true short-vega/gamma tail. Falls back to
+    # constant IV (spot-only) when VIX history is unavailable.
+    iv_scale = np.ones(obs)
+    vol_aware = False
+    vix_col = next((c for c in ("^VIX", "VIX") if c in closes.columns), None)
+    if vix_col is not None:
+        vix = closes[vix_col].ffill(limit=5).reindex(r.index)
+        vix_prev = closes[vix_col].ffill(limit=5).shift(1).reindex(r.index)
+        ratio = (vix / vix_prev).to_numpy()
+        good = np.isfinite(ratio) & (ratio > 0)
+        if good.mean() >= 0.9:
+            # clamp to a sane band so a bad print can't blow up the reval
+            iv_scale = np.clip(np.where(good, ratio, 1.0), 0.5, 3.0)
+            vol_aware = True
+    if not vol_aware:
+        issues.append(
+            "VaR holds implied vol constant (no usable VIX history) — for a "
+            "short-option book this understates the tail."
+        )
+
+    pnl_spot = np.zeros(obs)   # IV held constant (legacy method)
+    pnl_vol = np.zeros(obs)    # IV co-shocked with VIX (vol-aware)
+    # per-underlying head-method P&L, for component/marginal VaR decomposition
+    pnl_by_u: dict[str, np.ndarray] = {}
     for row in pos.itertuples():
         u = row.underlying
         if u not in r.columns:
             continue
         shocked = row.spot * (1.0 + r[u].to_numpy())
         if row.kind == "equity":
-            pnl += row.qty * (shocked - row.spot)
+            eq_pnl = row.qty * (shocked - row.spot)
+            pnl_spot += eq_pnl
+            pnl_vol += eq_pnl
+            head_pnl = eq_pnl
         else:
             t_years = (row.expiry - asof).days / 365.0
             iv = row.iv if row.iv and np.isfinite(row.iv) else DEFAULT_IV
             base_price, _ = bs_price_delta(row.spot, row.strike, t_years, iv, row.cp)
-            new_prices = _bs_price_vec(shocked, row.strike, t_years, iv, row.cp)
-            pnl += row.qty * 100.0 * (new_prices - base_price)
+            new_spot_only = _bs_price_vec(shocked, row.strike, t_years, iv, row.cp)
+            new_vol = _bs_price_vec(shocked, row.strike, t_years, iv * iv_scale, row.cp)
+            mult = getattr(row, "multiplier", 100) or 100
+            p_spot = row.qty * mult * (new_spot_only - base_price)
+            p_vol = row.qty * mult * (new_vol - base_price)
+            pnl_spot += p_spot
+            pnl_vol += p_vol
+            head_pnl = p_vol if vol_aware else p_spot
+        if u in pnl_by_u:
+            pnl_by_u[u] += head_pnl
+        else:
+            pnl_by_u[u] = head_pnl.copy()
 
-    losses = -pnl  # positive = loss
-    var_95 = float(np.percentile(losses, 95))
-    var_99 = float(np.percentile(losses, 99))
-    tail = losses[losses >= var_95]
-    es_95 = float(tail.mean()) if len(tail) else var_95
-    worst_i = int(np.argmax(losses))
+    def _var(pnl):
+        losses = -pnl
+        v95 = float(np.percentile(losses, 95))
+        v99 = float(np.percentile(losses, 99))
+        tail = losses[losses >= v95]
+        return v95, v99, (float(tail.mean()) if len(tail) else v95)
+
+    v95_spot, v99_spot, es_spot = _var(pnl_spot)
+    # headline VaR is vol-aware when we have the vol path, else identical to spot
+    pnl_head = pnl_vol if vol_aware else pnl_spot
+    v95, v99, es = _var(pnl_head)
+    worst_i = int(np.argmax(-pnl_head))
+
+    # ---- component / marginal VaR ------------------------------------------
+    # Allocate tail risk to underlyings by their average P&L on the tail days
+    # (total loss >= VaR95). This "contribution to ES95" is the Euler/additive
+    # decomposition: the parts sum exactly to ES95. Marginal = contribution per
+    # $1M of gross exposure (which names are risk-dense vs risk-cheap).
+    losses_head = -pnl_head
+    tail_mask = losses_head >= v95
+    exp_by_u = pos.groupby("underlying")["exposure"].sum()
+    meta = pos.groupby("underlying").agg(name=("name", "first"),
+                                         sector=("sector", "first"))
+    crows = []
+    for u, arr in pnl_by_u.items():
+        comp = float(np.mean(-arr[tail_mask])) if tail_mask.any() else 0.0
+        expo = float(exp_by_u.get(u, 0.0))
+        crows.append({
+            "underlying": u,
+            "name": meta.loc[u, "name"] if u in meta.index else u,
+            "sector": meta.loc[u, "sector"] if u in meta.index else "Unknown",
+            "exposure": expo,
+            "contrib_es95": comp,                       # sums to es_95
+            "pct_of_es95": comp / es if es else 0.0,
+            # marginal: tail-loss $ per $1M of gross exposure on this name
+            "risk_per_1m": comp / (abs(expo) / 1e6) if abs(expo) > 0 else float("nan"),
+        })
+    risk_contrib = (
+        pd.DataFrame(crows).sort_values("contrib_es95", ascending=False)
+        .reset_index(drop=True)
+        if crows else None
+    )
 
     uncovered = pos.loc[~pos["underlying"].isin(r.columns), "exposure"].abs().sum()
     gross = pos["exposure"].abs().sum()
@@ -172,12 +258,17 @@ def run_scenarios(
 
     return ScenarioResults(
         stress_grid=grid,
-        var_95=var_95,
-        var_99=var_99,
-        es_95=es_95,
+        var_95=v95,
+        var_99=v99,
+        es_95=es,
         var_obs=obs,
-        pnl_best=float(pnl.max()),
-        pnl_worst=float(pnl.min()),
+        pnl_best=float(pnl_head.max()),
+        pnl_worst=float(pnl_head.min()),
         worst_date=str(r.index[worst_i].date()),
+        var_95_spot=v95_spot,
+        var_99_spot=v99_spot,
+        es_95_spot=es_spot,
+        vol_aware=vol_aware,
+        risk_contrib=risk_contrib,
         issues=issues,
     )
