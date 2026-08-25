@@ -107,6 +107,8 @@ def generate_report(
             extra |= set(HEDGE_MENU)
         from .macro import MACRO_ETFS
         extra |= set(MACRO_ETFS)
+        # VIX drives the vol-aware VaR (option IV co-shocks with its history)
+        extra.add("^VIX")
         fetch_tickers = sorted(set(tickers) | extra)
 
     log(f"Fetching price history for {len(fetch_tickers)} tickers…")
@@ -163,11 +165,21 @@ def generate_report(
             analytics.positions, closes,
             {t: st.beta for t, st in stats.items()}, asof,
         )
+        def _nn(x):  # NaN -> None for clean JSON snapshots
+            return None if x != x else x
+
         risk_summary = {
-            "var_95": None if scenarios.var_95 != scenarios.var_95 else scenarios.var_95,
-            "var_99": None if scenarios.var_99 != scenarios.var_99 else scenarios.var_99,
-            "es_95": None if scenarios.es_95 != scenarios.es_95 else scenarios.es_95,
+            "var_95": _nn(scenarios.var_95),
+            "var_99": _nn(scenarios.var_99),
+            "es_95": _nn(scenarios.es_95),
+            "var_95_spot": _nn(scenarios.var_95_spot),
+            "var_99_spot": _nn(scenarios.var_99_spot),
+            "es_95_spot": _nn(scenarios.es_95_spot),
+            "vol_aware": scenarios.vol_aware,
         }
+        # portfolio greeks (from the option book) travel with the risk block so
+        # Trends can plot them and the AI narrative can reason about them
+        risk_summary.update(analytics.summary.get("greeks", {}))
         if factor_risk is not None:
             risk_summary.update({
                 "vol_total": factor_risk.vol_total,

@@ -762,11 +762,18 @@ def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
         return _pct(x / gross)
 
     if sc is not None:
+        vol_aware = getattr(sc, "vol_aware", False)
+        method = "vol-aware" if vol_aware else "hist-sim, spot-only"
         var_rows = [
-            ["Value at Risk (1-day, hist-sim)", "$M", "% Gross"],
+            [f"Value at Risk (1-day, {method})", "$M", "% Gross"],
             ["VaR 95%", _v(sc.var_95), _vp(sc.var_95)],
             ["VaR 99%", _v(sc.var_99), _vp(sc.var_99)],
             ["Expected shortfall 95%", _v(sc.es_95), _vp(sc.es_95)],
+        ]
+        if vol_aware and sc.var_95_spot == sc.var_95_spot:
+            var_rows.append(
+                ["  vol add-on to VaR95", _v(sc.var_95 - sc.var_95_spot), ""])
+        var_rows += [
             [f"Worst day in window ({sc.worst_date})", _v(-sc.pnl_worst if sc.pnl_worst == sc.pnl_worst else float('nan')), ""],
             [f"Scenario days used", f"{sc.var_obs}", ""],
         ]
@@ -781,6 +788,28 @@ def _render_risk_page(c, analytics, name, fr, sc, hedge=None, model=None,
     h1 = _draw_table(c, t1, MARGIN, y)
     h2 = _draw_table(c, t2, MARGIN + 240, y)
     y -= max(h1, h2) + 10
+
+    # ------------------------------ book greeks (option risk) strip
+    g = s.get("greeks") or {}
+    if g:
+        def _kd(v):
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                return "n/a"
+            k = v / 1e3
+            return f"(${abs(k):,.0f}k)" if k < 0 else f"${k:,.0f}k"
+        c.setFont("Helvetica-Bold", 8)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, "Book greeks")
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(
+            MARGIN + 52, y,
+            f"Net Δ {_m(g.get('net_delta', 0))}M   ·   "
+            f"Net Γ (P&L per ±1%) {_kd(g.get('net_gamma_1pct'))}   ·   "
+            f"Net vega (per +1 vol pt) {_kd(g.get('net_vega_1pt'))}   ·   "
+            f"Net θ (per day) {_kd(g.get('net_theta_day'))}",
+        )
+        y -= 14
 
     # ------------------------------ model diagnostics + bias-test line
     if model is not None:

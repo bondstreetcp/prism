@@ -58,6 +58,14 @@ def _m(v) -> str:
     return f"(${abs(v):,.1f}M)" if v < 0 else f"${v:,.1f}M"
 
 
+def _kd(v) -> str:
+    """Signed $ in thousands — for greeks (gamma/vega/theta) and small P&L."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    k = v / 1e3
+    return f"-${abs(k):,.0f}k" if k < 0 else f"${k:,.0f}k"
+
+
 # ----------------------------------------------------------------- auth
 def _expected_password():
     env = os.environ.get("APP_PASSWORD")
@@ -167,6 +175,49 @@ result = st.session_state.get("result")
 # =====================================================================
 # Tab renderers
 # =====================================================================
+def _render_risk_greeks(res):
+    """1-day VaR (vol-aware) + portfolio option greeks."""
+    risk = res.summary.get("risk") or {}
+    greeks = res.summary.get("greeks") or {}
+    if risk.get("var_95") is None and not greeks:
+        return  # factor model / scenarios were turned off
+
+    st.subheader("Risk — 1-day VaR & greeks")
+    v1, v2, v3, v4 = st.columns(4)
+    v1.metric("VaR 95%", _m(risk.get("var_95")))
+    v2.metric("VaR 99%", _m(risk.get("var_99")))
+    v3.metric("Expected shortfall 95%", _m(risk.get("es_95")))
+    addon = None
+    if risk.get("var_95") is not None and risk.get("var_95_spot") is not None:
+        addon = risk["var_95"] - risk["var_95_spot"]
+    v4.metric("Vol add-on to VaR95", _m(addon),
+              help="Extra VaR from the historical vol spike that accompanies a "
+                   "sell-off, beyond the spot move alone — the short-vega / "
+                   "short-gamma tail a delta-only VaR misses.")
+    if risk.get("vol_aware"):
+        st.caption("Vol-aware historical VaR — option IV co-shocks with the VIX "
+                   f"path each day. Spot-only VaR95 would read "
+                   f"{_m(risk.get('var_95_spot'))}.")
+    elif risk.get("var_95") is not None:
+        st.caption("Spot-only VaR (implied vol held constant — VIX history "
+                   "unavailable this run).")
+
+    if greeks:
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("Net delta", _m(greeks.get("net_delta")),
+                  help="Delta-adjusted net exposure (equity + option delta).")
+        g2.metric("Net gamma · P&L per ±1%", _kd(greeks.get("net_gamma_1pct")),
+                  help="Convexity P&L from a 1% underlying move in either "
+                       "direction. Negative = short gamma (put-writing).")
+        g3.metric("Net vega · per +1 vol pt", _kd(greeks.get("net_vega_1pt")),
+                  help="P&L if implied vol rises one point. Negative = short "
+                       "vol — loses when vol spikes.")
+        g4.metric("Net theta · per day", _kd(greeks.get("net_theta_day")),
+                  help="Time decay per calendar day. Positive = long theta "
+                       "(collecting premium).")
+    st.divider()
+
+
 def render_report(res):
     if res.alert_hits:
         st.error("⚠ **Risk limit breach(es):**\n\n"
@@ -187,6 +238,8 @@ def render_report(res):
     if summ["coverage"] < 0.999:
         st.caption(f"{basis_label} covers {summ['coverage']:.0%} of gross "
                    "delta-adjusted exposure (names without a beta are excluded).")
+
+    _render_risk_greeks(res)
 
     st.subheader("Exposure breakdown")
     cats = [("By sector", "sector", None), ("By market cap", "cap_bucket", CAP_ORDER),
