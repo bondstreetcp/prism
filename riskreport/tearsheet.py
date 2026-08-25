@@ -196,8 +196,9 @@ FACTOR_LABELS = {
 }
 
 
-def _render_attribution_page(c, analytics, name, brinson, scenario_lib) -> None:
-    """Page 3: Brinson performance attribution + crisis-scenario replays."""
+def _render_attribution_page(c, analytics, name, brinson, scenario_lib,
+                             factor_attr=None) -> None:
+    """Page 3: Brinson + factor attribution + crisis-scenario replays."""
     import math
 
     def pf(x, dp=1):
@@ -253,6 +254,31 @@ def _render_attribution_page(c, analytics, name, brinson, scenario_lib) -> None:
         t = _table(rows, [116, 40, 40, 46, 46, 50, 50, 50])
         y -= _draw_table(c, t, MARGIN, y) + 14
 
+    # ---------------------------------------------- factor return attribution
+    if factor_attr is not None:
+        fa = factor_attr
+        c.setFont("Helvetica-Bold", 10)
+        c.setFillColor(HexColor(INK))
+        c.drawString(MARGIN, y, "Factor-based return attribution")
+        y -= 13
+        c.setFont("Helvetica", 8)
+        c.setFillColor(HexColor(INK_2))
+        c.drawString(MARGIN, y, f"Realized book P&L {fa.start} to {fa.end}: "
+                                f"{_m(fa.realized_pnl)}M  =  factors "
+                                f"{_m(fa.factor_pnl)}M  +  specific "
+                                f"{_m(fa.specific_pnl)}M")
+        y -= 16
+        rows = [["Factor", "Net exp $M", "Factor ret", "P&L $M"]]
+        ft = fa.table.reindex(
+            fa.table["pnl"].abs().sort_values(ascending=False).index)
+        for r in ft.itertuples():
+            rows.append([str(r.factor)[:16], _m(r.exposure), pf(r.factor_return),
+                         _m(r.pnl)])
+        rows.append(["Specific", "", "", _m(fa.specific_pnl)])
+        rows.append(["Total (realized)", "", "", _m(fa.realized_pnl)])
+        t = _table(rows, [140, 70, 60, 60])
+        y -= _draw_table(c, t, MARGIN, y) + 14
+
     # ---------------------------------------------- crisis scenarios
     if scenario_lib:
         c.setFont("Helvetica-Bold", 10)
@@ -294,6 +320,7 @@ def render_tearsheet(
     bias=None,
     brinson=None,
     scenario_lib=None,
+    factor_attr=None,
 ) -> Path:
     a = analytics
     s = a.summary
@@ -524,9 +551,10 @@ def render_tearsheet(
                           model, bias)
         c.showPage()
 
-    # page 3: performance attribution (Brinson) + crisis scenarios (if present)
-    if brinson is not None or scenario_lib:
-        _render_attribution_page(c, analytics, name, brinson, scenario_lib)
+    # page 3: performance attribution (Brinson + factor) + crisis scenarios
+    if brinson is not None or scenario_lib or factor_attr is not None:
+        _render_attribution_page(c, analytics, name, brinson, scenario_lib,
+                                 factor_attr)
         c.showPage()
 
     c.save()

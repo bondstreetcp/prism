@@ -456,8 +456,60 @@ def render_brinson(res):
     st.divider()
 
 
+def render_factor_attr(res):
+    """Factor-based (Barra) return attribution — realized P&L by factor."""
+    from riskreport.attribution_factor import factor_return_attribution, WINDOWS
+
+    st.subheader("Factor-based return attribution")
+    if (res.factor_risk is None or res.model is None
+            or getattr(res, "factor_returns", None) is None):
+        st.info("Needs the factor model — re-run with it enabled.")
+        return
+    win = st.radio("Window", list(WINDOWS), index=1, horizontal=True,
+                   key="factorattr_win")
+    try:
+        fa = factor_return_attribution(
+            res.factor_risk, res.model, res.closes, res.factor_returns,
+            res.analytics.issuers, res.analytics.asof,
+            res.summary.get("aum"), window=win)
+    except Exception as exc:
+        st.error(f"Factor attribution failed: {exc}")
+        return
+    if fa is None:
+        st.info("Not enough history in the window.")
+        return
+
+    aum = fa.aum if fa.aum else None
+    st.caption(f"Realized book P&L {fa.start} → {fa.end}, decomposed into "
+               "systematic factor P&L (net exposure × factor return) and a "
+               "stock-specific remainder. Parts sum to realized.")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Realized P&L", _m(fa.realized_pnl),
+              (f"{fa.realized_pnl/aum:+.1%} of AUM" if aum else None))
+    m2.metric("From factors", _m(fa.factor_pnl))
+    m3.metric("Stock-specific", _m(fa.specific_pnl))
+
+    t = fa.table.reindex(fa.table["pnl"].abs().sort_values(ascending=False).index)
+    disp = pd.DataFrame({
+        "Factor": t["factor"],
+        "Net exposure": t["exposure"].map(_m),
+        "Factor return": t["factor_return"].map(lambda x: f"{x:+.1%}"),
+        "P&L": t["pnl"].map(_m),
+    })
+    disp.loc[len(disp)] = ["Stock-specific", "", "", _m(fa.specific_pnl)]
+    st.dataframe(disp, hide_index=True, width="stretch")
+    chart = pd.concat([t.set_index("factor")["pnl"],
+                       pd.Series({"Stock-specific": fa.specific_pnl})]) / 1e6
+    st.markdown("**P&L contribution by factor** ($M)")
+    st.bar_chart(chart, horizontal=True, height=280)
+    for msg in fa.issues:
+        st.caption(f"⚠ {msg}")
+    st.divider()
+
+
 def render_benchmark(res):
     render_brinson(res)
+    render_factor_attr(res)
     if res.factor_risk is None or res.model is None:
         st.info("Benchmark-relative risk needs the factor model — re-run with "
                 "the factor model enabled.")

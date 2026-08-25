@@ -34,8 +34,9 @@ SYSTEM_PROMPT = (
     "sits; the option-greek profile (net gamma/vega/theta — a short-premium book "
     "is short gamma, short vega, long theta) and how much implied-vol moves add to "
     "VaR (var_vol_addon vs spot-only); which names drive the expected tail loss "
-    "(top_tail_risk_contributors); what performance attribution says drove active "
-    "return vs the S&P (allocation vs selection); crisis-scenario exposures; and "
+    "(top_tail_risk_contributors); what attribution says drove return — sector "
+    "allocation vs selection (Brinson) and which factor bets paid vs stock-"
+    "specific (factor attribution); crisis-scenario exposures; and "
     "notable liquidity or crowding/squeeze exposures and any limit breaches; then "
     "one or two concrete things to watch. Reference the actual numbers. Be "
     "specific, not generic. Do not invent data. Describe risk and positioning; do "
@@ -48,7 +49,8 @@ CHAT_SYSTEM_PROMPT = (
     "of liquid hedge ETFs. The snapshot may include option greeks (net gamma/vega/"
     "theta), vol-aware VaR (with the vol add-on vs spot-only), component VaR (each "
     "name's share of expected tail loss), Brinson performance attribution "
-    "(allocation vs selection vs the S&P), and crisis-scenario P&L. Use them when "
+    "(allocation vs selection vs the S&P), factor-based return attribution "
+    "(factor P&L vs stock-specific), and crisis-scenario P&L. Use them when "
     "relevant. Answer the PM's questions grounded in these numbers. "
     "When they ask how to change an exposure (e.g. reduce net short momentum), "
     "reason from the factor loadings: name specific instruments and rough dollar "
@@ -199,6 +201,19 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "top_sector_contributions_pct": {
                 str(r.sector): round(r.total * 100, 2) for r in top.itertuples()
             },
+        }
+    # factor-based (Barra) return attribution
+    fa = getattr(result, "factor_attr", None)
+    if fa is not None:
+        top = fa.table.reindex(
+            fa.table["pnl"].abs().sort_values(ascending=False).index).head(6)
+        facts["factor_return_attribution"] = {
+            "window": f"{fa.start}..{fa.end}",
+            "realized_pnl_$M": round(fa.realized_pnl / 1e6, 2),
+            "factor_pnl_$M": round(fa.factor_pnl / 1e6, 2),
+            "specific_pnl_$M": round(fa.specific_pnl / 1e6, 2),
+            "top_factor_pnl_$M": {str(r.factor): round(r.pnl / 1e6, 2)
+                                  for r in top.itertuples()},
         }
     # crisis-scenario replays (only when the run included them)
     lib = getattr(result, "scenario_lib", None)

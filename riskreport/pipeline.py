@@ -44,6 +44,8 @@ class ReportResult:
     closes: object = None      # price history (for macro overlay)
     profiles: dict = field(default_factory=dict)  # for the screener
     brinson: object = None     # Brinson attribution (PDF + app)
+    factor_attr: object = None  # factor-based return attribution (PDF + app)
+    factor_returns: object = None  # Ken French daily factors (app re-slices windows)
     scenario_lib: list = field(default_factory=list)  # crisis replays (opt-in)
 
 
@@ -140,6 +142,7 @@ def generate_report(
     )
 
     factor_risk = scenarios = model = bias = None
+    factor_returns = None
     if not no_factors:
         from .factors import (
             compute_factor_risk, factor_bias_test, fetch_factor_returns,
@@ -248,6 +251,7 @@ def generate_report(
 
     # Brinson performance attribution (cheap: sector ETFs already fetched)
     brinson = None
+    factor_attr = None
     if not no_factors:
         try:
             from .attribution_brinson import brinson_attribution
@@ -255,6 +259,13 @@ def generate_report(
                                           window="3M")
         except Exception as exc:
             log(f"  Brinson attribution unavailable: {exc}")
+        try:
+            from .attribution_factor import factor_return_attribution
+            factor_attr = factor_return_attribution(
+                factor_risk, model, closes, factor_returns, analytics.issuers,
+                asof, analytics.summary.get("aum"), window="3M")
+        except Exception as exc:
+            log(f"  factor attribution unavailable: {exc}")
 
     # Crisis-scenario replays (opt-in: needs a multi-year history fetch)
     scenario_lib: list = []
@@ -284,7 +295,7 @@ def generate_report(
         alert_hits=alert_hits, crowding=crowding,
         model=model if not no_factors else None,
         bias=bias if not no_factors else None,
-        brinson=brinson, scenario_lib=scenario_lib,
+        brinson=brinson, scenario_lib=scenario_lib, factor_attr=factor_attr,
     )
 
     s = analytics.summary
@@ -307,4 +318,5 @@ def generate_report(
         scenarios=scenarios, hedge=hedge, crowding=crowding_obj, bias=bias,
         stats=stats, closes=closes, profiles=profiles,
         brinson=brinson, scenario_lib=scenario_lib,
+        factor_attr=factor_attr, factor_returns=factor_returns,
     )
