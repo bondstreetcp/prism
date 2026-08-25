@@ -31,7 +31,9 @@ SYSTEM_PROMPT = (
     "in $M unless a key says otherwise). Write a tight risk commentary a PM would "
     "actually read: headline positioning (net/gross, market direction, biggest "
     "factor and sector tilts); what drives predicted risk and where concentration "
-    "sits; the option-greek profile (net gamma/vega/theta — a short-premium book "
+    "sits; concentration (effective number of risk bets vs issuers held, "
+    "diversification ratio, top-5 share of risk); the option-greek profile "
+    "(net gamma/vega/theta — a short-premium book "
     "is short gamma, short vega, long theta) and how much implied-vol moves add to "
     "VaR (the vol add-on vs spot-only) plus the Monte Carlo VaR cross-check; which "
     "names drive the expected tail loss; active risk "
@@ -225,6 +227,15 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "specific_pnl_$M": round(fa.specific_pnl / 1e6, 2),
             "top_factor_pnl_$M": {str(r.factor): round(r.pnl / 1e6, 2)
                                   for r in top.itertuples()},
+        }
+    # concentration / diversification
+    con = getattr(result, "concentration", None)
+    if con is not None:
+        facts["concentration"] = {
+            "issuers_held": con["n_issuers"],
+            "effective_risk_bets": round(con["effective_bets_risk"], 1),
+            "diversification_ratio": round(con["diversification_ratio"], 2),
+            "top5_share_of_risk": round(con["top5_risk_share"], 3),
         }
     # Monte Carlo VaR (parametric, factor model)
     mc = getattr(result, "mc_var", None)
