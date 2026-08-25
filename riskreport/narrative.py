@@ -34,7 +34,8 @@ SYSTEM_PROMPT = (
     "sits; how realized risk compares to predicted (trailing-1y realized vol vs "
     "predicted vol, max drawdown, realized vs model VaR); concentration "
     "(effective number of risk bets vs issuers held, "
-    "diversification ratio, top-5 share of risk); the option-greek profile "
+    "diversification ratio, top-5 share of risk, and the correlated risk "
+    "clusters / implicit thematic bets); the option-greek profile "
     "(net gamma/vega/theta — a short-premium book is short gamma, short vega, "
     "long theta), the options term structure (how much theta income and gamma "
     "risk sit in near-dated <30d expiries), and how much implied-vol moves add to "
@@ -253,6 +254,17 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "liquidity_adjusted_var95_$M": (round(lq.lvar / 1e6, 2)
                                             if lq.lvar is not None else None),
         })
+    # correlation-based risk clusters (top few by risk share)
+    cl = getattr(result, "risk_clusters", None)
+    if cl is not None and not cl.table.empty:
+        facts["risk_clusters"] = [
+            {"dominant_sector": str(r.dominant_sector),
+             "top_members": str(r.top_members),
+             "risk_share": round(float(r.risk_share), 3),
+             "avg_corr": (round(float(r.avg_corr), 2)
+                          if r.avg_corr == r.avg_corr else None)}
+            for r in cl.table.head(5).itertuples()
+        ]
     # concentration / diversification
     con = getattr(result, "concentration", None)
     if con is not None:

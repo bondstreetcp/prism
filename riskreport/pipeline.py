@@ -56,6 +56,7 @@ class ReportResult:
     concentration: object = None  # concentration/diversification metrics
     liquidity_cost: object = None  # liquidation cost & liquidity-adjusted VaR
     perf_stats: object = None    # realized risk/drawdown backtest of the book
+    risk_clusters: object = None  # correlation-based risk clusters
     options_ladder: object = None  # options term structure (expiry/theta ladder)
 
 
@@ -308,6 +309,15 @@ def generate_report(
         except Exception as exc:
             log(f"  macro overlay unavailable: {exc}")
 
+    # correlation-based risk clusters (for the AI facts; app has a slider)
+    clusters = None
+    if not no_factors and factor_risk is not None and model is not None:
+        try:
+            from .risk_clusters import risk_clusters as _rc
+            clusters = _rc(factor_risk, model, n_clusters=6)
+        except Exception as exc:
+            log(f"  risk clusters unavailable: {exc}")
+
     # concentration / diversification (cheap, from the factor risk decomposition)
     concentration = None
     if not no_factors and factor_risk is not None and model is not None:
@@ -424,4 +434,5 @@ def generate_report(
         benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
         concentration=concentration, options_ladder=opt_ladder,
         liquidity_cost=liquidity_cost, perf_stats=perf_stats,
+        risk_clusters=clusters,
     )
