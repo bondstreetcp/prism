@@ -577,6 +577,29 @@ def render_risk(res):
     if res.analytics is None:
         st.info("Run a report first.")
         return
+
+    # risk at a glance — the headline numbers before the detailed breakdowns
+    risk = res.summary.get("risk") or {}
+    con = getattr(res, "concentration", None)
+    ps = getattr(res, "perf_stats", None)
+    lq = getattr(res, "liquidity_cost", None)
+    if risk.get("var_95") is not None or risk.get("vol_total") is not None:
+        st.markdown("#### Risk at a glance")
+        g = st.columns(6)
+        g[0].metric("Predicted vol (ann.)", _m(risk.get("vol_total")))
+        g[1].metric("1-day VaR 95%", _m(risk.get("var_95")))
+        g[2].metric("Max drawdown 1y",
+                    f"{ps.max_drawdown_pct:.1%}" if ps else "—")
+        g[3].metric("Effective bets",
+                    f"{con['effective_bets_risk']:.0f}" if con else "—")
+        g[4].metric("Net vega / +1pt", _kd(risk.get("net_vega_1pt")))
+        g[5].metric("Liquidity-adj VaR95",
+                    _m(lq.lvar) if lq and lq.lvar is not None else "—")
+        st.caption("Detailed breakdowns below: VaR & greeks · predicted-vol "
+                   "drivers · factor-by-sector · concentration · clusters · "
+                   "liquidity · realized drawdown · Monte Carlo.")
+        st.divider()
+
     _render_risk_greeks(res)
     _render_factor_decomp(res)
     _render_factor_sector(res)
