@@ -130,13 +130,7 @@ def brinson_attribution(
     if iss.empty:
         return None
 
-    net_total = float(iss["exposure"].sum())
-    if abs(net_total) < 0.1 * gross:
-        issues.append("Book is near market-neutral — net-exposure weights (and "
-                      "thus the attribution) are unstable; read with care.")
-    base = net_total if abs(net_total) > 1e-9 else gross
-
-    # ---- benchmark sector returns from SPDR ETFs ---------------------------
+    # ---- benchmark sector returns from SPDR ETFs (defines the covered set) --
     bench_ret = {}
     for sec, etf in SECTOR_ETF.items():
         if etf in closes.columns:
@@ -151,11 +145,32 @@ def brinson_attribution(
     wsum = sum(bw.values()) or 1.0
     bw = {s: w / wsum for s, w in bw.items()}
     r_bench = sum(bw[s] * bench_ret[s] for s in bw)
+    covered_secs = set(bw)
+
+    # Portfolio weights are normalized over the COVERED equity sleeve (GICS
+    # sectors with an SPDR proxy) so that Σ w_p = Σ w_b = 1 and the
+    # allocation+selection+interaction decomposition reconciles exactly to
+    # r_port − r_bench. Exposure in unmapped sectors (ETF/Index, Unknown, or a
+    # sector without a proxy) sits outside a sector-vs-S&P attribution and is
+    # excluded (and disclosed).
+    in_scope = iss[iss["sector"].isin(covered_secs)]
+    base = float(in_scope["exposure"].sum())
+    if abs(base) < 1e-9:
+        return None
+    off = float(iss.loc[~iss["sector"].isin(covered_secs), "exposure"].abs().sum())
+    if off / gross > 0.02:
+        issues.append(f"{off/gross:.0%} of gross exposure sits in sectors outside "
+                      "the S&P GICS scope (ETFs, cash, unmapped) and is excluded "
+                      "from the attribution.")
+    if abs(base) < 0.1 * (in_scope["exposure"].abs().sum() or 1.0):
+        issues.append("Covered sleeve is near market-neutral — net-exposure "
+                      "weights are unstable; read with care.")
 
     # ---- portfolio sector weights & returns --------------------------------
-    grp = iss.groupby("sector").apply(
+    grp = in_scope.groupby("sector").apply(
         lambda g: pd.Series({
             "sec_exp": g["exposure"].sum(),
+            "sec_gross": g["exposure"].abs().sum(),
             "sec_ret": (g["exposure"] * g["ret"]).sum() / g["exposure"].sum()
             if g["exposure"].sum() != 0 else 0.0,
         }), include_groups=False)
@@ -166,9 +181,17 @@ def brinson_attribution(
             continue
         w_b = bw[sec]
         r_b = bench_ret[sec]
-        w_p = float(grp.loc[sec, "sec_exp"] / base) if sec in grp.index else 0.0
-        # not held → selection is zero (only the allocation effect applies)
-        r_p = float(grp.loc[sec, "sec_ret"]) if sec in grp.index else r_b
+        if sec in grp.index:
+            w_p = float(grp.loc[sec, "sec_exp"] / base)
+            # a near-market-neutral sector has an ill-defined net return; a tiny
+            # denominator would explode r_p, so treat its selection as zero
+            if abs(grp.loc[sec, "sec_exp"]) < 0.05 * grp.loc[sec, "sec_gross"]:
+                r_p = r_b
+            else:
+                r_p = float(grp.loc[sec, "sec_ret"])
+        else:
+            w_p = 0.0  # not held → only the allocation effect applies
+            r_p = r_b
         alloc = (w_p - w_b) * (r_b - r_bench)
         selec = w_b * (r_p - r_b)
         inter = (w_p - w_b) * (r_p - r_b)

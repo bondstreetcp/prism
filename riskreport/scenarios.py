@@ -51,8 +51,9 @@ def _reval_position(row, new_spot: float, iv_scale: float, asof: date) -> float:
     if row.kind == "equity":
         return row.qty * (new_spot - row.spot)
     t_years = (row.expiry - asof).days / 365.0
-    iv = (row.iv if row.iv and np.isfinite(row.iv) else DEFAULT_IV) * iv_scale
-    base_price, _ = bs_price_delta(row.spot, row.strike, t_years, row.iv or DEFAULT_IV, row.cp)
+    base_iv = row.iv if row.iv and np.isfinite(row.iv) else DEFAULT_IV
+    iv = base_iv * iv_scale
+    base_price, _ = bs_price_delta(row.spot, row.strike, t_years, base_iv, row.cp)
     new_price, _ = bs_price_delta(new_spot, row.strike, t_years, iv, row.cp)
     return row.qty * 100.0 * (new_price - base_price)
 

@@ -54,6 +54,11 @@ if remote_store.enabled() and not st.session_state.get("snap_pulled"):
 def _m(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return "—"
+    # sub-million values (small books, VaR, sector nets) read better in $k than
+    # as "$0.0M"; $1M+ stays in $M
+    if abs(v) < 1e6:
+        k = v / 1e3
+        return f"(${abs(k):,.0f}k)" if k < 0 else f"${k:,.0f}k"
     v = v / 1e6
     return f"(${abs(v):,.1f}M)" if v < 0 else f"${v:,.1f}M"
 
@@ -165,6 +170,14 @@ def _do_run():
         status.update(label=f"Done in {res.elapsed_s:.0f}s", state="complete",
                       expanded=False)
         st.session_state["result"] = res
+        # invalidate derived caches from any prior book so the MC / Scenarios /
+        # AI tabs never show a previous report's numbers (these caches are
+        # keyed by as-of date, which can collide across different uploads)
+        for k in [k for k in st.session_state
+                  if k.startswith(("mc_", "scenlib_"))]:
+            del st.session_state[k]
+        st.session_state.pop("ai_summary", None)
+        st.session_state["ai_chat"] = []
         # Mirror this run's snapshot off-box so the history survives reboots.
         remote_store.push_date(SNAP_DIR, res.asof, log=prog)
     except Exception as exc:
@@ -342,9 +355,13 @@ def _render_montecarlo(res):
             import numpy as np
             pnl_m = mc.pnl / 1e6
             counts, edges = np.histogram(pnl_m, bins=60)
-            centers = np.round((edges[:-1] + edges[1:]) / 2, 2)
+            centers = (edges[:-1] + edges[1:]) / 2
+            # label bins but keep a unique index (rounded centers can collide
+            # on a small-range book, which would make Altair merge bars)
+            hist_df = pd.DataFrame({"P&L $M": np.round(centers, 3),
+                                    "scenarios": counts})
             st.markdown("**Simulated 1-day P&L distribution ($M)**")
-            st.bar_chart(pd.Series(counts, index=centers), height=220)
+            st.bar_chart(hist_df, x="P&L $M", y="scenarios", height=220)
 
 
 def render_report(res):
@@ -739,6 +756,10 @@ def render_scenarios(res):
                 return
 
         results = st.session_state[key]
+        if not results:
+            st.warning("No scenarios could be run (no usable history for this "
+                       "book's names in the crisis windows).")
+            return
         hist = [r for r in results if r.kind == "historical"]
         hypo = [r for r in results if r.kind == "hypothetical"]
 
@@ -859,24 +880,34 @@ def render_pretrade(res):
         except Exception as exc:
             st.error(f"Could not reprice proposed book: {exc}")
             return
-        prop_fr = prop_sc = None
+        prop_fr = prop_sc = prop_cr = None
+        recompute_warns = []
         try:
             from riskreport.factors import compute_factor_risk
             prop_fr = compute_factor_risk(prop.positions, res.model)
-        except Exception:
-            pass
+        except Exception as exc:
+            recompute_warns.append(f"predicted-vol limit not re-checked: {exc}")
         try:
             from riskreport.scenarios import run_scenarios
             betas = {t: s.beta for t, s in (res.stats or {}).items()}
             prop_sc = run_scenarios(prop.positions, res.closes, betas, asof)
+        except Exception as exc:
+            recompute_warns.append(f"VaR limit not re-checked: {exc}")
+        try:
+            from riskreport.crowding import compute_crowding
+            prop_cr = compute_crowding(prop.issuers, prop.positions)
         except Exception:
-            pass
+            prop_cr = res.crowding  # fall back to base crowding
 
     cfg = getattr(res, "alert_config", None)
     before = {r["key"]: r for r in evaluate_limits(
         res.analytics, res.factor_risk, res.scenarios, cfg, res.crowding)}
     after = {r["key"]: r for r in evaluate_limits(
-        prop, prop_fr, prop_sc, cfg, res.crowding)}
+        prop, prop_fr, prop_sc, cfg, prop_cr)}
+    # a failed recompute would silently read as "not breached" — surface it so a
+    # compliance clear is never based on a limit that wasn't actually evaluated
+    for w in recompute_warns:
+        st.warning(f"⚠ {w} — treat the verdict for that limit as unknown.")
 
     st.caption(f"{len(trades)} trade(s) applied · {len(proposed_pos)} positions "
                f"after. {len(prop.issues)} data note(s) on the proposed book.")

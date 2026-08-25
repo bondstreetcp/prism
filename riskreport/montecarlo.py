@@ -87,10 +87,15 @@ def monte_carlo_var(
     eps = rng.standard_normal((n_sims, len(unders))) * s    # (M, U)
     r = fsim @ B.T + eps                                    # (M, U) returns
 
-    # implied-vol co-shock driven by the simulated market factor
-    mkt_i = fn.index("Mkt-RF") if "Mkt-RF" in fn else 0
+    # implied-vol co-shock driven by the simulated market factor. Without a
+    # market factor we can't identify the driver, so skip the co-shock (spot-
+    # only) rather than shock off an unrelated factor.
     vol_beta = _calibrate_vol_beta(closes)
-    iv_scale = np.clip(np.exp(vol_beta * fsim[:, mkt_i]), *_IV_CLAMP)  # (M,)
+    if "Mkt-RF" in fn:
+        iv_scale = np.clip(np.exp(vol_beta * fsim[:, fn.index("Mkt-RF")]),
+                           *_IV_CLAMP)  # (M,)
+    else:
+        iv_scale = np.ones(n_sims)
 
     pnl_spot = np.zeros(n_sims)
     pnl_vol = np.zeros(n_sims)
