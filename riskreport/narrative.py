@@ -44,7 +44,9 @@ SYSTEM_PROMPT = (
     "specific (factor attribution); crisis-scenario exposures; interest-rate "
     "risk of any bond-ETF sleeve (DV01, dollar duration, +100bp P&L); macro "
     "sensitivities (rates/credit/oil/USD/gold betas); and "
-    "notable liquidity or crowding/squeeze exposures and any limit breaches; then "
+    "notable liquidity (days-to-liquidate, estimated liquidation cost and the "
+    "liquidity-adjusted VaR) or crowding/squeeze exposures and any limit "
+    "breaches; then "
     "one or two concrete things to watch. Reference the actual numbers. Be "
     "specific, not generic. Do not invent data. Describe risk and positioning; do "
     "not give buy/sell investment advice. Write prose, 3-5 short paragraphs."
@@ -229,6 +231,16 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "top_factor_pnl_$M": {str(r.factor): round(r.pnl / 1e6, 2)
                                   for r in top.itertuples()},
         }
+    # liquidation cost & liquidity-adjusted VaR
+    lq = getattr(result, "liquidity_cost", None)
+    if lq is not None:
+        facts["liquidity"] = facts.get("liquidity") or {}
+        facts["liquidity"].update({
+            "est_liquidation_cost_$M": round(lq.total_cost / 1e6, 2),
+            "liquidation_cost_pct_gross": round(lq.cost_pct_gross, 4),
+            "liquidity_adjusted_var95_$M": (round(lq.lvar / 1e6, 2)
+                                            if lq.lvar is not None else None),
+        })
     # concentration / diversification
     con = getattr(result, "concentration", None)
     if con is not None:

@@ -54,6 +54,7 @@ class ReportResult:
     mc_var: object = None        # Monte Carlo VaR (fixed sample)
     macro: object = None         # macro-proxy sensitivities (for the AI facts)
     concentration: object = None  # concentration/diversification metrics
+    liquidity_cost: object = None  # liquidation cost & liquidity-adjusted VaR
     options_ladder: object = None  # options term structure (expiry/theta ladder)
 
 
@@ -342,6 +343,21 @@ def generate_report(
     except Exception as exc:
         log(f"  options ladder unavailable: {exc}")
 
+    # liquidation cost & liquidity-adjusted VaR — cheap, issuer-level
+    liquidity_cost = None
+    try:
+        from .liquidity_cost import liquidation_analysis
+        _liq = analytics.summary.get("liquidity") or {}
+        _v95 = (analytics.summary.get("risk") or {}).get("var_95")
+        liquidity_cost = liquidation_analysis(
+            analytics.issuers, stats, var_95=_v95,
+            days_to_liq_p95=_liq.get("days_to_liq_p95"))
+        if liquidity_cost is not None:
+            log(f"Liquidation cost ${liquidity_cost.total_cost/1e6:,.2f}M "
+                f"({liquidity_cost.cost_pct_gross:.2%} of gross)")
+    except Exception as exc:
+        log(f"  liquidity cost unavailable: {exc}")
+
     # fixed-income (rate) risk for the bond-ETF sleeve — cheap, issuer-level
     fi_risk = None
     try:
@@ -394,4 +410,5 @@ def generate_report(
         base_positions=parsed.positions, alert_config=cfg, fi_risk=fi_risk,
         benchmark_risk=benchmark_risk, mc_var=mc_var, macro=macro,
         concentration=concentration, options_ladder=opt_ladder,
+        liquidity_cost=liquidity_cost,
     )

@@ -418,6 +418,51 @@ def _render_concentration(res):
                "See the risk-contributor tables above for the names.")
 
 
+def _render_liquidity(res):
+    """Liquidation cost & liquidity-adjusted VaR."""
+    if res.analytics is None:
+        return
+    from riskreport.liquidity_cost import liquidation_analysis
+    risk = res.summary.get("risk") or {}
+    liq_sum = res.summary.get("liquidity") or {}
+    lq = liquidation_analysis(
+        res.analytics.issuers, res.stats or {}, var_95=risk.get("var_95"),
+        days_to_liq_p95=liq_sum.get("days_to_liq_p95"))
+    if lq is None or lq.by_name["liq_cost"].isna().all():
+        return
+    st.divider()
+    st.subheader("Liquidity & liquidation cost")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Est. liquidation cost", _m(lq.total_cost),
+              help="Cost of unwinding the book via a square-root market-impact "
+                   f"model (k={lq.impact_k}); the market moves against you.")
+    c2.metric("Cost (% of gross)", f"{lq.cost_pct_gross:.2%}")
+    c3.metric("Days to liquidate (p95)",
+              f"{lq.days_to_liq_p95:,.1f}d" if lq.days_to_liq_p95 else "—",
+              help="95th-percentile days to unwind at 20% of ADV.")
+    if lq.var_95 is not None:
+        c4.metric("Liquidity-adj. VaR95", _m(lq.lvar),
+                  delta=f"+{_m(lq.total_cost)} vs VaR", delta_color="inverse",
+                  help="VaR95 plus the liquidation cost (exogenous LVaR).")
+    st.caption("Names by liquidation cost — biggest, hardest-to-exit positions "
+               "first. Impact is a modeled estimate, not a quoted spread.")
+    top = lq.by_name.head(10)
+    disp = pd.DataFrame({
+        "Ticker": top["underlying"],
+        "Sector": top["sector"].astype(str).str.slice(0, 16),
+        "Exposure": top["exposure"].map(_m),
+        "Days to liq": top["days_to_liq"].map(
+            lambda x: f"{x:,.1f}d" if pd.notna(x) else "—"),
+        "Impact (bps)": top["impact_bps"].map(
+            lambda x: f"{x:,.0f}" if pd.notna(x) else "—"),
+        "Liq. cost": top["liq_cost"].map(
+            lambda x: _m(x) if pd.notna(x) else "—"),
+    })
+    st.dataframe(disp, hide_index=True, width="stretch")
+    for m in lq.issues:
+        st.caption(f"⚠ {m}")
+
+
 def render_report(res):
     if res.alert_hits:
         st.error("⚠ **Risk limit breach(es):**\n\n"
@@ -442,6 +487,7 @@ def render_report(res):
     _render_risk_greeks(res)
     _render_factor_decomp(res)
     _render_concentration(res)
+    _render_liquidity(res)
     _render_montecarlo(res)
 
     st.subheader("Exposure breakdown")
