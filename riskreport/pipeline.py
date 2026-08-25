@@ -109,6 +109,9 @@ def generate_report(
         extra |= set(MACRO_ETFS)
         # VIX drives the vol-aware VaR (option IV co-shocks with its history)
         extra.add("^VIX")
+        # SPDR sector ETFs = benchmark sector returns for Brinson attribution
+        from .attribution_brinson import SECTOR_ETFS
+        extra |= set(SECTOR_ETFS)
         fetch_tickers = sorted(set(tickers) | extra)
 
     log(f"Fetching price history for {len(fetch_tickers)} tickers…")

@@ -343,7 +343,67 @@ def render_trends():
         st.line_chart(df, height=200)
 
 
+def render_brinson(res):
+    """Brinson-Fachler realized-return attribution vs the S&P 500."""
+    from riskreport.attribution_brinson import (
+        brinson_attribution, WINDOWS, SP500_WEIGHT_ASOF)
+
+    st.subheader("Performance attribution (Brinson–Fachler vs S&P 500)")
+    if res.analytics is None or res.closes is None:
+        st.info("Attribution needs holdings and price history — re-run a report.")
+        return
+    win = st.radio("Window", list(WINDOWS), index=1, horizontal=True,
+                   key="brinson_win")
+    try:
+        br = brinson_attribution(res.analytics.issuers, res.closes,
+                                 res.analytics.asof, window=win)
+    except Exception as exc:
+        st.error(f"Attribution failed: {exc}")
+        return
+    if br is None:
+        st.info("Not enough price history in the window for attribution.")
+        return
+
+    st.caption(f"Current holdings held {br.start} → {br.end} · portfolio return "
+               f"{br.r_port:+.2%} vs benchmark {br.r_bench:+.2%} · S&P sector "
+               f"weights approx as of {SP500_WEIGHT_ASOF} · {br.coverage:.0%} of "
+               "gross exposure has a usable return.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Active return", f"{br.active:+.2%}")
+    m2.metric("Allocation", f"{br.allocation:+.2%}",
+              help="From over/under-weighting sectors vs the index.")
+    m3.metric("Selection", f"{br.selection:+.2%}",
+              help="From name picks within sectors.")
+    m4.metric("Interaction", f"{br.interaction:+.2%}",
+              help="Cross term of active weight × active return.")
+
+    t = br.table.copy()
+    disp = pd.DataFrame({
+        "Sector": t["sector"],
+        "Wt port": (t["w_port"]).map(lambda x: f"{x:.0%}"),
+        "Wt bench": (t["w_bench"]).map(lambda x: f"{x:.0%}"),
+        "Ret port": (t["r_port"]).map(lambda x: f"{x:+.1%}"),
+        "Ret bench": (t["r_bench"]).map(lambda x: f"{x:+.1%}"),
+        "Allocation": (t["allocation"]).map(lambda x: f"{x:+.2%}"),
+        "Selection": (t["selection"]).map(lambda x: f"{x:+.2%}"),
+        "Total": (t["total"]).map(lambda x: f"{x:+.2%}"),
+    })
+    st.dataframe(disp, hide_index=True, width="stretch")
+    st.markdown("**Active contribution by sector** (allocation + selection + "
+                "interaction, %)")
+    st.bar_chart(t.set_index("sector")["total"], horizontal=True, height=280)
+    if br.issues:
+        for msg in br.issues:
+            st.caption(f"⚠ {msg}")
+    st.caption("Current-holdings attribution; option legs are attributed at "
+               "their underlying's return (theta/vega/gamma P&L is covered on "
+               "the Report risk panel). Net-exposure weighted — a long/short "
+               "book stretches the classic long-only Brinson frame.")
+    st.divider()
+
+
 def render_benchmark(res):
+    render_brinson(res)
     if res.factor_risk is None or res.model is None:
         st.info("Benchmark-relative risk needs the factor model — re-run with "
                 "the factor model enabled.")
