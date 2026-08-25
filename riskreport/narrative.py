@@ -283,6 +283,8 @@ def build_facts(result, benchmark=None, macro=None) -> dict:
             "vega_per_+1volpt_$K": round(lad.total_vega_1pt / 1e3, 1),
             "pct_theta_within_30d": round(lad.near_theta_share, 2),
             "pct_gamma_risk_within_30d": round(lad.near_gamma_share, 2),
+            "deep_otm_put_vega_$K_tail_vol": round(
+                getattr(lad, "deep_otm_put_vega", 0) / 1e3, 1),
         }
     # Monte Carlo VaR (parametric, factor model)
     mc = getattr(result, "mc_var", None)
