@@ -100,17 +100,23 @@ def options_ladder(positions: pd.DataFrame, asof: date) -> LadderResult | None:
     spot = pd.to_numeric(opt["spot"], errors="coerce")
     strike = pd.to_numeric(opt["strike"], errors="coerce")
     is_put = opt["cp"].astype(str).str.upper().eq("P")
-    opt["otm"] = np.where(is_put, (spot - strike) / spot, (strike - spot) / spot)
-    opt["m_bucket"] = opt["otm"].map(_moneyness_bucket)
-    by_moneyness = opt.groupby("m_bucket").agg(**_AGG)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        opt["otm"] = np.where(is_put, (spot - strike) / spot,
+                              (strike - spot) / spot)
+    # options with a missing/zero spot have an undefined moneyness; exclude them
+    # from the skew view rather than let NaN fall through into the ITM bucket
+    m_ok = opt[np.isfinite(opt["otm"])].copy()
+    m_ok["m_bucket"] = m_ok["otm"].map(_moneyness_bucket)
+    by_moneyness = m_ok.groupby("m_bucket").agg(**_AGG)
     by_moneyness = by_moneyness.reindex(
         [b for b in MONEYNESS_ORDER if b in by_moneyness.index]).reset_index()
-    deep_put = opt[is_put & (opt["otm"] >= 0.10)]
+    deep_put = m_ok[m_ok["cp"].astype(str).str.upper().eq("P")
+                    & (m_ok["otm"] >= 0.10)]
     deep_otm_put_vega = float(deep_put["vega_dollar"].sum())
 
     theta = float(opt["theta_dollar"].sum())
     gamma = float(opt["gamma_pnl_1pct"].sum())
-    near = opt[opt["dte"] <= 30]
+    near = opt[(opt["dte"] >= 0) & (opt["dte"] <= 30)]
     theta_abs = float(opt["theta_dollar"].abs().sum()) or 1.0
     gamma_abs = float(opt["gamma_pnl_1pct"].abs().sum()) or 1.0
 
