@@ -30,6 +30,7 @@ from riskreport.narrative import (
 )
 from riskreport.optimizer import OBJECTIVES, optimize_overlay
 from riskreport.pipeline import generate_report
+from riskreport import remote_store
 from riskreport.screener import build_screen_frame, screen
 from riskreport.tags import parse_tags, theme_exposure
 from riskreport.trends import TREND_METRICS, load_trend_series
@@ -39,6 +40,13 @@ st.set_page_config(page_title="Portfolio Risk", page_icon="📊", layout="wide")
 CACHE_DIR = os.environ.get("RISK_CACHE_DIR", "cache")
 OUT_DIR = os.environ.get("RISK_OUT_DIR", "reports")
 SNAP_DIR = os.environ.get("RISK_SNAP_DIR", "snapshots")
+
+# On ephemeral hosts (Streamlit Cloud) the snapshot dir is wiped on reboot.
+# If a remote mirror is configured, pull the accumulated history once per
+# session so Trends/attribution see it. No-op when unconfigured (NAS/local).
+if remote_store.enabled() and not st.session_state.get("snap_pulled"):
+    remote_store.pull(SNAP_DIR)
+    st.session_state["snap_pulled"] = True
 
 
 def _m(v) -> str:
@@ -141,6 +149,8 @@ def _do_run():
         status.update(label=f"Done in {res.elapsed_s:.0f}s", state="complete",
                       expanded=False)
         st.session_state["result"] = res
+        # Mirror this run's snapshot off-box so the history survives reboots.
+        remote_store.push_date(SNAP_DIR, res.asof, log=prog)
     except Exception as exc:
         status.update(label="Failed", state="error")
         st.error(f"Report generation failed: {exc}")
