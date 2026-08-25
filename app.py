@@ -962,17 +962,50 @@ def _pct1(x):
     return "—" if x is None or (isinstance(x, float) and pd.isna(x)) else f"{x:+.1%}"
 
 
+def _render_pnl_curve(res):
+    """Portfolio P&L curve across market moves — the payoff shape."""
+    if res.analytics is None or res.closes is None:
+        return
+    from riskreport.pnl_curve import pnl_curve
+    betas = {t: s.beta for t, s in (res.stats or {}).items()}
+    c = pnl_curve(res.analytics.positions, betas, res.closes, res.analytics.asof)
+    if c is None:
+        return
+    st.subheader("Portfolio P&L curve")
+    st.caption("Book P&L as the market moves ±30% (beta-propagated, full option "
+               "revaluation). A concave shape = short gamma (a put-writing book "
+               "loses faster the harder the market falls). The vol-aware line "
+               "co-shocks implied vol with the move.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("P&L at −10%", _m(c.pnl_down10))
+    m2.metric("P&L at −20%", _m(c.pnl_down20))
+    m3.metric("P&L at +10%", _m(c.pnl_up10))
+    m4.metric("Worst in ±30%", _m(c.worst_loss))
+    t = c.table.copy()
+    t["Market move"] = (t["move"] * 100).round(0)
+    chart = pd.DataFrame({
+        "spot-only": (t["pnl_spot"] / 1e6).values,
+        "vol-aware": (t["pnl_vol"] / 1e6).values,
+    }, index=t["Market move"].values)
+    st.line_chart(chart, height=300)
+    st.caption("$M P&L (y) vs market move % (x). Instantaneous shock — time to "
+               "expiry held fixed.")
+    st.divider()
+
+
 def render_scenarios(res):
-    """Named scenario library — replay historical crises against this book."""
+    """P&L curve + named scenario library — reprice the book under shocks."""
     from riskreport import scenario_library as scl
+
+    if res.analytics is None:
+        st.info("Run a report first.")
+        return
+    _render_pnl_curve(res)
 
     st.markdown("**Scenario library** — reprice *today's* book under historical "
                 "crises (full option revaluation, implied vol shocked by the "
                 "episode's actual VIX move) and hypothetical shocks. An "
                 "instantaneous shock: time to expiry is held fixed.")
-    if res.analytics is None:
-        st.info("Run a report first.")
-        return
 
     aum = res.summary.get("aum")
     key = f"scenlib_{res.analytics.asof}"
